@@ -5,7 +5,9 @@ export const DOCUMENT_LIMITS = {
   maxSpeakers: 100,
   maxRows: 50_000,
   maxSpeakerNameLength: 80,
-  maxRowTextLength: 100_000,
+  // A long monologue is a single row (consecutive sentences of one speaker stay together),
+  // so a multi-hour single-speaker recording can legitimately produce a very long row.
+  maxRowTextLength: 2_000_000,
   maxIdLength: 64,
 } as const;
 

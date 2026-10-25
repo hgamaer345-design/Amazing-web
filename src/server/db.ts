@@ -508,16 +508,30 @@ export class TranscriptRepository {
   /**
    * Puts a job back in the queue after a transient failure, to be retried after `delayMs`.
    * Keep the provider job id when the provider-side job may still be valid (e.g. a network
-   * error while polling) so the retry resumes instead of re-uploading.
+   * error while polling) so the retry resumes instead of re-uploading. `refundAttempt` gives back
+   * the attempt this claim used (for interruptions that aren't failures, such as a shutdown).
    */
-  requeue(id: string, workerId: string, delayMs: number, opts: { keepProviderJobId: boolean }): boolean {
+  requeue(
+    id: string,
+    workerId: string,
+    delayMs: number,
+    opts: { keepProviderJobId: boolean; refundAttempt?: boolean },
+  ): boolean {
     const res = this.db
       .prepare(
         `UPDATE transcripts SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?,
-           provider_job_id = CASE WHEN ? THEN provider_job_id ELSE NULL END, updated_at = ?
+           provider_job_id = CASE WHEN ? THEN provider_job_id ELSE NULL END,
+           attempts = CASE WHEN ? THEN MAX(attempts - 1, 0) ELSE attempts END, updated_at = ?
          WHERE id = ? AND lease_owner = ?`,
       )
-      .run(this.now() + delayMs, opts.keepProviderJobId ? 1 : 0, this.iso(), id, workerId);
+      .run(
+        this.now() + delayMs,
+        opts.keepProviderJobId ? 1 : 0,
+        opts.refundAttempt ? 1 : 0,
+        this.iso(),
+        id,
+        workerId,
+      );
     return res.changes === 1;
   }
 }

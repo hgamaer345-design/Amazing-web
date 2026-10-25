@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_MAX_UPLOAD_BYTES, type ProviderName } from '../shared/types';
 
@@ -20,13 +21,15 @@ export interface AppConfig {
     apiKey: string | undefined;
     /** e.g. https://api.assemblyai.com or https://api.eu.assemblyai.com */
     baseUrl: string;
-    /** Optional speech model override (passed through to the API). */
-    speechModel: string | undefined;
+    /** Ordered `speech_models` list; the API falls back to later models for unsupported languages. */
+    speechModels: string[];
   };
   deepgram: {
     apiKey: string | undefined;
     baseUrl: string;
     model: string;
+    /** `diarize_model` value ("latest", "v1", "v2"). */
+    diarizeModel: string;
   };
   mock: {
     /** Simulated processing time in ms. */
@@ -70,7 +73,20 @@ function str(value: string | undefined): string | undefined {
   return v ? v : undefined;
 }
 
+function list(value: string | undefined): string[] | undefined {
+  const items = value
+    ?.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return items?.length ? items : undefined;
+}
+
 const PROVIDERS: readonly ProviderName[] = ['assemblyai', 'deepgram', 'mock'];
+
+/** Loads variables from a .env file if present. Variables already set in the environment win. */
+export function loadDotEnv(file = '.env'): void {
+  if (fs.existsSync(file)) process.loadEnvFile(file);
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const dataDir = path.resolve(env.DATA_DIR ?? './data');
@@ -122,12 +138,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     assemblyai: {
       apiKey: assemblyKey,
       baseUrl: (str(env.ASSEMBLYAI_BASE_URL) ?? 'https://api.assemblyai.com').replace(/\/+$/, ''),
-      speechModel: str(env.ASSEMBLYAI_SPEECH_MODEL),
+      speechModels: list(env.ASSEMBLYAI_SPEECH_MODELS) ?? ['universal-3-5-pro', 'universal-2'],
     },
     deepgram: {
       apiKey: deepgramKey,
       baseUrl: (str(env.DEEPGRAM_BASE_URL) ?? 'https://api.deepgram.com').replace(/\/+$/, ''),
       model: str(env.DEEPGRAM_MODEL) ?? 'nova-3',
+      diarizeModel: str(env.DEEPGRAM_DIARIZE_MODEL) ?? 'latest',
     },
     mock: {
       delayMs: int(env.MOCK_DELAY_MS, 4000, 0),

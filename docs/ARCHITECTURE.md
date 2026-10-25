@@ -131,7 +131,8 @@ disk (`fs.createReadStream` → `Readable.toWeb`, `duplex: 'half'`) — never bu
 memory. The API key is only ever read from `AppConfig`, sent in headers, and never logged or returned.
 
 - **AssemblyAI** (default when `ASSEMBLYAI_API_KEY` is set): upload the file (`POST {baseUrl}/v2/upload`),
-  create a transcript with speaker labels + automatic language detection (+ `speakers_expected` when
+  create a transcript with `speech_models` (default `["universal-3-5-pro", "universal-2"]`), speaker labels +
+  automatic language detection (+ `speakers_expected` when
   given), call `onJobCreated(transcriptId)`, poll `GET /v2/transcript/{id}` every
   `providerPollIntervalMs` until `completed`/`error`. Map `utterances` to segments (`speaker` label,
   `start`/`end` ms, `text`); `language_code` → languageCode; `audio_duration` → durationSec. A
@@ -139,7 +140,8 @@ memory. The API key is only ever read from `AppConfig`, sent in headers, and nev
   `DELETE /v2/transcript/{id}`. `resume` → poll the existing id. **Check the current AssemblyAI API
   docs** (field names, speech model parameters, language-detection + diarization compatibility) and
   follow them.
-- **Deepgram**: `POST {baseUrl}/v1/listen?model=…&diarize=true&detect_language=true&punctuate=true&smart_format=true&utterances=true`
+- **Deepgram**: `POST {baseUrl}/v1/listen?model=…&diarize_model=latest&detect_language=true&punctuate=true&smart_format=true&utterances=true`
+  (`diarize` is deprecated and must not be sent together with `diarize_model`)
   with the file as the body (synchronous; the worker waits). Map `results.utterances` (speaker
   number → label) or fall back to paragraphs/words; `results.channels[0].detected_language`.
   No `speakersExpected` support. No `resume` (resubmit). **Check the current Deepgram docs.**
