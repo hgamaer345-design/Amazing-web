@@ -213,7 +213,7 @@ export function uploadTranscript(
     }
     form.append('file', file, file.name);
 
-    xhr.open('POST', '/api/transcripts');
+    xhr.open('POST', options.quality ? `/api/transcripts?quality=${options.quality}` : '/api/transcripts');
     xhr.setRequestHeader('Accept', 'application/json');
     xhr.upload.onprogress = (e) => {
       onProgress({ loaded: e.loaded, total: e.lengthComputable ? e.total : file.size });

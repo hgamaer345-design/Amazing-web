@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import { makeId } from '../../../shared/speakers';
 import { formatDuration } from '../../../shared/time';
-import type { ExportFormat, TranscriptDetail, TranscriptDocument, TranscriptSummary } from '../../../shared/types';
+import type {
+  ExportFormat,
+  TranscriptDetail,
+  TranscriptDocument,
+  TranscriptSummary,
+} from '../../../shared/types';
 import { QUALITY_MODE_DEFINITIONS } from '../../../shared/quality';
 import { audioUrl, downloadExport, saveDocument, updateTranscript } from '../../api';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
@@ -44,7 +49,11 @@ const NON_TEXT_INPUTS = new Set(['checkbox', 'radio', 'range', 'button', 'submit
 function isTextField(el: Element | null): boolean {
   if (!el) return false;
   if (el instanceof HTMLInputElement) return !NON_TEXT_INPUTS.has(el.type);
-  return el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || (el as HTMLElement).isContentEditable;
+  return (
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement ||
+    (el as HTMLElement).isContentEditable
+  );
 }
 
 /** Controls where Space has its own meaning (activate, type, toggle). */
@@ -60,7 +69,9 @@ function toEditable(doc: TranscriptDocument): EditableDoc {
 
 export function TranscriptEditor({ transcript, document: loaded, onSummaryChange }: TranscriptEditorProps) {
   const id = transcript.id;
-  const [history, dispatch] = useReducer(historyReducer<EditableDoc>, loaded, (d) => createHistory(toEditable(d)));
+  const [history, dispatch] = useReducer(historyReducer<EditableDoc>, loaded, (d) =>
+    createHistory(toEditable(d)),
+  );
   const doc = history.present;
   const [conflict, setConflict] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -68,10 +79,13 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
   const [followAlong, setFollowAlong] = useState(false);
 
   // ---- Autosave --------------------------------------------------------------------------------
-  const save = useCallback(async (d: EditableDoc, baseVersion: number) => {
-    const { speakers, rows } = pruneUnusedSpeakers(d);
-    return (await saveDocument(id, { baseVersion, speakers, rows })).version;
-  }, [id]);
+  const save = useCallback(
+    async (d: EditableDoc, baseVersion: number) => {
+      const { speakers, rows } = pruneUnusedSpeakers(d);
+      return (await saveDocument(id, { baseVersion, speakers, rows })).version;
+    },
+    [id],
+  );
   const onConflict = useCallback((serverDoc: EditableDoc) => {
     dispatch({ type: 'reset', present: serverDoc });
     setConflict(true);
@@ -123,7 +137,10 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
   );
 
   // ---- Editing ---------------------------------------------------------------------------------
-  const apply = useCallback((update: (d: EditableDoc) => EditableDoc) => dispatch({ type: 'apply', update }), []);
+  const apply = useCallback(
+    (update: (d: EditableDoc) => EditableDoc) => dispatch({ type: 'apply', update }),
+    [],
+  );
   const { seek, toggle } = player;
   const actions = useMemo<RowActions>(
     () => ({
@@ -187,9 +204,13 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
         setExportError('The export couldn’t be created. Please try again.');
       }
     } else if (result === 'conflict') {
-      setExportError('The export was cancelled because this transcript was changed somewhere else. Check the latest version, then export again.');
+      setExportError(
+        'The export was cancelled because this transcript was changed somewhere else. Check the latest version, then export again.',
+      );
     } else {
-      setExportError('Your latest changes couldn’t be saved, so the export was cancelled. Retry saving, then export again.');
+      setExportError(
+        'Your latest changes couldn’t be saved, so the export was cancelled. Retry saving, then export again.',
+      );
     }
   };
 
@@ -217,8 +238,8 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
             </div>
             <div>
               <dt>Quality</dt>
-              <dd className="tx-quality-badge" data-quality={transcript.quality ?? 'high'}>
-                {QUALITY_MODE_DEFINITIONS[transcript.quality ?? 'high'].label}
+              <dd className="tx-quality-badge" data-quality={transcript.quality}>
+                {QUALITY_MODE_DEFINITIONS[transcript.quality].label}
               </dd>
             </div>
             <div>
@@ -298,7 +319,9 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
         <SpeakerTimeline
           rows={doc.rows}
           speakers={doc.speakers}
-          durationMs={player.durationMs ?? (transcript.durationSec != null ? transcript.durationSec * 1000 : null)}
+          durationMs={
+            player.durationMs ?? (transcript.durationSec != null ? transcript.durationSec * 1000 : null)
+          }
           time={player.time}
           onSeek={hasAudio ? (ms) => seek(ms, { play: true }) : undefined}
         />

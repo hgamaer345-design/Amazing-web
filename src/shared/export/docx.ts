@@ -59,7 +59,11 @@ export async function toDocx(rows: ExportRow[], input: ExportInput): Promise<Uin
     tableHeader: true,
     cantSplit: true,
     children: ['#', 'Speaker', 'Start', 'End', 'Text'].map((label, i) =>
-      cell([new Paragraph({ children: [new TextRun({ text: label, bold: true })] })], COLUMN_WIDTHS[i]!, true),
+      cell(
+        [new Paragraph({ children: [new TextRun({ text: label, bold: true })] })],
+        COLUMN_WIDTHS[i]!,
+        true,
+      ),
     ),
   });
 

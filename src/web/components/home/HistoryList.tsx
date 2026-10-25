@@ -49,7 +49,7 @@ function StatusBadge({ t }: { t: TranscriptSummary }) {
 }
 
 function HistoryCard({ t, now, onDeleted }: { t: TranscriptSummary; now: number; onDeleted: () => void }) {
-  const quality = QUALITY_MODE_DEFINITIONS[t.quality ?? 'high'];
+  const quality = QUALITY_MODE_DEFINITIONS[t.quality];
   const meta = [
     formatDuration(t.durationSec),
     t.speakerCount != null ? `${t.speakerCount} ${t.speakerCount === 1 ? 'speaker' : 'speakers'}` : null,

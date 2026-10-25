@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ERROR_MESSAGES } from '../../../shared/errors';
-import { DEFAULT_QUALITY_MODE, DEFAULT_ULTRA_DAILY_LIMIT, qualityModeInfo } from '../../../shared/quality';
 import type { QualityMode } from '../../../shared/types';
 import { ApiError, uploadTranscript, type UploadHandle } from '../../api';
 import { useNow, useUsage } from '../../hooks/useUsage';
@@ -35,10 +34,7 @@ export function UploadPanel() {
   const { config } = useAppConfig();
   const { usage, refresh: refreshUsage } = useUsage();
   const now = useNow(30_000);
-  const modes = useMemo(
-    () => config.qualityModes ?? qualityModeInfo({ ultra: DEFAULT_ULTRA_DAILY_LIMIT }),
-    [config.qualityModes],
-  );
+  const modes = config.qualityModes;
   const speakersId = useId();
   const keepId = useId();
 
@@ -46,7 +42,7 @@ export function UploadPanel() {
   const [problem, setProblem] = useState<string | null>(null);
   const [speakers, setSpeakers] = useState<number | null>(null);
   const [keepAudio, setKeepAudio] = useState(false);
-  const [quality, setQuality] = useState<QualityMode>(config.defaultQuality ?? DEFAULT_QUALITY_MODE);
+  const [quality, setQuality] = useState<QualityMode>(config.defaultQuality);
   const [notice, setNotice] = useState<string | null>(null);
   const [upload, setUpload] = useState<UploadState | null>(null);
   const [error, setError] = useState<string | null>(null);

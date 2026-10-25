@@ -60,7 +60,11 @@ export async function readErrorDetail(res: Response): Promise<string | undefined
     const body = JSON.parse(text) as Record<string, unknown>;
     const candidate = body.error ?? body.err_msg ?? body.message ?? body.detail;
     if (typeof candidate === 'string') detail = candidate;
-    else if (candidate && typeof candidate === 'object' && typeof (candidate as { message?: unknown }).message === 'string') {
+    else if (
+      candidate &&
+      typeof candidate === 'object' &&
+      typeof (candidate as { message?: unknown }).message === 'string'
+    ) {
       detail = (candidate as { message: string }).message;
     }
   } catch {
@@ -108,7 +112,9 @@ export interface FetchOptions extends ClassifyOptions {
  * abort propagates unchanged so the worker can tell "cancelled" apart from "failed".
  */
 export async function providerFetch(url: string, init: RequestInit, opts: FetchOptions): Promise<Response> {
-  const signal = opts.timeoutMs ? AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)]) : opts.signal;
+  const signal = opts.timeoutMs
+    ? AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)])
+    : opts.signal;
   let res: Response;
   try {
     res = await fetch(url, { ...init, signal });

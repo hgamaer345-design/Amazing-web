@@ -82,7 +82,9 @@ function TranscriptView({ id }: { id: string }) {
   }, [title]);
 
   const onSummaryChange = useCallback((summary: TranscriptSummary) => {
-    setState((prev) => (prev.kind === 'ready' ? { kind: 'ready', transcript: { ...prev.transcript, ...summary } } : prev));
+    setState((prev) =>
+      prev.kind === 'ready' ? { kind: 'ready', transcript: { ...prev.transcript, ...summary } } : prev,
+    );
   }, []);
 
   if (state.kind === 'loading') {
@@ -155,7 +157,9 @@ function TranscriptView({ id }: { id: string }) {
               Having trouble reaching the server. Still trying…
             </p>
           )}
-          <p className="field-hint">You can leave this page; the transcript will keep processing on the server.</p>
+          <p className="field-hint">
+            You can leave this page; the transcript will keep processing on the server.
+          </p>
           <div className="tx-state-actions">
             <Link to="/" className="btn">
               Upload another file
@@ -185,7 +189,13 @@ function TranscriptView({ id }: { id: string }) {
   return <TranscriptEditor transcript={t} document={t.document} onSummaryChange={onSummaryChange} />;
 }
 
-function TranscriptErrorCard({ transcript: t, onRetried }: { transcript: TranscriptDetail; onRetried: () => Promise<void> }) {
+function TranscriptErrorCard({
+  transcript: t,
+  onRetried,
+}: {
+  transcript: TranscriptDetail;
+  onRetried: () => Promise<void>;
+}) {
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
 
@@ -218,8 +228,8 @@ function TranscriptErrorCard({ transcript: t, onRetried }: { transcript: Transcr
         )}
         {!t.audioAvailable && (
           <p className="field-hint">
-            The audio is no longer stored on the server, so this transcript can’t be retried. Upload the file again
-            to try once more.
+            The audio is no longer stored on the server, so this transcript can’t be retried. Upload the file
+            again to try once more.
           </p>
         )}
         {retryError && (
@@ -229,7 +239,12 @@ function TranscriptErrorCard({ transcript: t, onRetried }: { transcript: Transcr
         )}
         <div className="tx-state-actions">
           {t.audioAvailable && (
-            <button type="button" className="btn btn-primary" disabled={retrying} onClick={() => void retry()}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={retrying}
+              onClick={() => void retry()}
+            >
               {retrying && <span className="spinner" aria-hidden="true" />}
               {retrying ? 'Retrying…' : 'Retry'}
             </button>

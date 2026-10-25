@@ -3,8 +3,14 @@ import * as demo from './demoApi';
 
 function wavFile(name: string, size = 64): File {
   const bytes = new Uint8Array(size);
-  bytes.set([...'RIFF'].map((c) => c.charCodeAt(0)), 0);
-  bytes.set([...'WAVE'].map((c) => c.charCodeAt(0)), 8);
+  bytes.set(
+    [...'RIFF'].map((c) => c.charCodeAt(0)),
+    0,
+  );
+  bytes.set(
+    [...'WAVE'].map((c) => c.charCodeAt(0)),
+    8,
+  );
   return new File([bytes], name, { type: 'audio/wav' });
 }
 
@@ -46,7 +52,11 @@ describe('demo API', () => {
 
     const doc = done.document!;
     const renamed = doc.speakers.map((s, i) => (i === 0 ? { ...s, name: 'Interviewer' } : s));
-    const saved = await demo.saveDocument(summary.id, { baseVersion: doc.version, speakers: renamed, rows: doc.rows });
+    const saved = await demo.saveDocument(summary.id, {
+      baseVersion: doc.version,
+      speakers: renamed,
+      rows: doc.rows,
+    });
     expect(saved.version).toBe(doc.version + 1);
     await expect(
       demo.saveDocument(summary.id, { baseVersion: doc.version, speakers: doc.speakers, rows: doc.rows }),

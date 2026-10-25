@@ -93,7 +93,8 @@ export class AutosaveEngine {
     this.clearTimer();
     if (this.cancelled) return;
     const finalSave = () => {
-      if (this.dirty && !this.cancelled) void this.callbacks.save(this.doc, this.version).catch(() => undefined);
+      if (this.dirty && !this.cancelled)
+        void this.callbacks.save(this.doc, this.version).catch(() => undefined);
     };
     if (this.inFlight) void this.inFlight.then(finalSave);
     else finalSave();
@@ -174,7 +175,13 @@ export interface Autosave {
   cancel(): void;
 }
 
-export function useAutosave({ doc, initialVersion, save, onConflict, delayMs = 800 }: AutosaveOptions): Autosave {
+export function useAutosave({
+  doc,
+  initialVersion,
+  save,
+  onConflict,
+  delayMs = 800,
+}: AutosaveOptions): Autosave {
   const [state, setState] = useState<{ status: SaveStatus; error: string | null }>({
     status: 'saved',
     error: null,

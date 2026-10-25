@@ -74,22 +74,31 @@ describe('toAppError', () => {
   });
 
   it('maps body-parser errors', () => {
-    expect(toAppError(Object.assign(new SyntaxError('x'), { status: 400, type: 'entity.parse.failed' }))).toMatchObject(
-      { code: 'INVALID_INPUT', status: 400 },
-    );
-    expect(toAppError(Object.assign(new Error('x'), { status: 413, type: 'entity.too.large' }))).toMatchObject({
+    expect(
+      toAppError(Object.assign(new SyntaxError('x'), { status: 400, type: 'entity.parse.failed' })),
+    ).toMatchObject({ code: 'INVALID_INPUT', status: 400 });
+    expect(
+      toAppError(Object.assign(new Error('x'), { status: 413, type: 'entity.too.large' })),
+    ).toMatchObject({
       code: 'INVALID_INPUT',
       status: 413,
     });
-    expect(toAppError(Object.assign(new Error('x'), { status: 415, type: 'charset.unsupported' }))).toMatchObject({
+    expect(
+      toAppError(Object.assign(new Error('x'), { status: 415, type: 'charset.unsupported' })),
+    ).toMatchObject({
       code: 'INVALID_INPUT',
       status: 415,
     });
   });
 
   it('keeps other client error statuses', () => {
-    expect(toAppError(Object.assign(new Error('x'), { status: 416 }))).toMatchObject({ code: 'INVALID_INPUT', status: 416 });
-    expect(toAppError(Object.assign(new Error('x'), { statusCode: 404 }))).toMatchObject({ code: 'NOT_FOUND' });
+    expect(toAppError(Object.assign(new Error('x'), { status: 416 }))).toMatchObject({
+      code: 'INVALID_INPUT',
+      status: 416,
+    });
+    expect(toAppError(Object.assign(new Error('x'), { statusCode: 404 }))).toMatchObject({
+      code: 'NOT_FOUND',
+    });
   });
 
   it('turns everything else into a generic 500 without internals', () => {

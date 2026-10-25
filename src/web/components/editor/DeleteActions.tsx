@@ -61,9 +61,7 @@ export function DeleteTranscriptButton({
         <ConfirmDialog
           title="Delete this transcript?"
           message={
-            <p>
-              “{title}” and any audio stored for it will be permanently deleted. This can’t be undone.
-            </p>
+            <p>“{title}” and any audio stored for it will be permanently deleted. This can’t be undone.</p>
           }
           confirmLabel="Delete permanently"
           busyLabel="Deleting…"

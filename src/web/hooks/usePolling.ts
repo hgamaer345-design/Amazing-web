@@ -28,14 +28,17 @@ export function usePolling({ enabled, poll, delayMs }: PollingOptions): void {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const startedAt = Date.now();
     const schedule = () => {
-      timer = setTimeout(async () => {
-        try {
-          await pollRef.current();
-        } catch {
-          // The poll callback reports its own errors; a failed tick must not stop polling.
-        }
-        if (!cancelled) schedule();
-      }, delayRef.current(Date.now() - startedAt));
+      timer = setTimeout(
+        async () => {
+          try {
+            await pollRef.current();
+          } catch {
+            // The poll callback reports its own errors; a failed tick must not stop polling.
+          }
+          if (!cancelled) schedule();
+        },
+        delayRef.current(Date.now() - startedAt),
+      );
     };
     schedule();
     return () => {

@@ -88,9 +88,7 @@ export function mapDeepgramResponse(res: DgResponse): ProviderResult {
       }
     }
   } else if (alt?.transcript?.trim()) {
-    segments = [
-      { speaker: null, startMs: 0, endMs: sec(res.metadata?.duration ?? 0), text: alt.transcript },
-    ];
+    segments = [{ speaker: null, startMs: 0, endMs: sec(res.metadata?.duration ?? 0), text: alt.transcript }];
   }
   return {
     segments,

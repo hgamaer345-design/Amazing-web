@@ -81,19 +81,25 @@ describe('POST /api/transcripts', () => {
   });
 
   it('accepts fields sent after the file', async () => {
-    const res = await upload().attach('file', makeWav({ seconds: 1 }), 'late.wav').field('keepAudio', 'true');
+    const res = await upload()
+      .attach('file', makeWav({ seconds: 1 }), 'late.wav')
+      .field('keepAudio', 'true');
     expect(res.status).toBe(201);
     expect(res.body.transcript.keepAudio).toBe(true);
   });
 
   it('falls back to the browser-measured duration when the file has none', async () => {
-    const res = await upload().field('clientDurationSec', '42.5').attach('file', makeWav({ seconds: 0 }), 'rec.wav');
+    const res = await upload()
+      .field('clientDurationSec', '42.5')
+      .attach('file', makeWav({ seconds: 0 }), 'rec.wav');
     expect(res.status).toBe(201);
     expect(res.body.transcript.durationSec).toBe(42.5);
   });
 
   it('ignores an unusable browser-measured duration', async () => {
-    const res = await upload().field('clientDurationSec', 'Infinity').attach('file', makeWav({ seconds: 0 }), 'r.wav');
+    const res = await upload()
+      .field('clientDurationSec', 'Infinity')
+      .attach('file', makeWav({ seconds: 0 }), 'r.wav');
     expect(res.status).toBe(201);
     expect(res.body.transcript.durationSec).toBeNull();
   });
@@ -101,7 +107,9 @@ describe('POST /api/transcripts', () => {
   it('does not record a speaker count the provider cannot use', async () => {
     ctx.cleanup();
     ctx = createTestContext({ provider: fakeProvider({ name: 'deepgram', supportsSpeakerCount: false }) });
-    const res = await upload().field('speakersExpected', '2').attach('file', makeWav({ seconds: 1 }), 'a.wav');
+    const res = await upload()
+      .field('speakersExpected', '2')
+      .attach('file', makeWav({ seconds: 1 }), 'a.wav');
     expect(res.status).toBe(201);
     expect(res.body.transcript).toMatchObject({ speakersExpected: null, provider: 'deepgram' });
   });
@@ -120,7 +128,11 @@ describe('POST /api/transcripts', () => {
   });
 
   it('rejects content that is not audio even with an audio extension', async () => {
-    const res = await upload().attach('file', Buffer.from('This is a plain text file pretending to be audio.'), 'talk.mp3');
+    const res = await upload().attach(
+      'file',
+      Buffer.from('This is a plain text file pretending to be audio.'),
+      'talk.mp3',
+    );
     expect(res.status).toBe(415);
     expect(res.body.error).toMatchObject({ code: 'UNSUPPORTED_FILE' });
     expect(res.body.error.detail).toContain('talk.mp3');
@@ -134,7 +146,10 @@ describe('POST /api/transcripts', () => {
   });
 
   it('rejects audio-looking files that cannot be parsed (422)', async () => {
-    const garbage = Buffer.concat([Buffer.from('RIFF\x00\x00\x00\x00WAVE', 'latin1'), Buffer.alloc(64, 0xab)]);
+    const garbage = Buffer.concat([
+      Buffer.from('RIFF\x00\x00\x00\x00WAVE', 'latin1'),
+      Buffer.alloc(64, 0xab),
+    ]);
     const res = await upload().attach('file', garbage, 'broken.wav');
     expect(res.status).toBe(422);
     expect(res.body.error.code).toBe('UNREADABLE_AUDIO');
@@ -178,7 +193,9 @@ describe('POST /api/transcripts', () => {
   });
 
   it.each(['0', '11', '-1', '2.5', 'abc', '1e1'])('rejects speakersExpected=%s', async (value) => {
-    const res = await upload().field('speakersExpected', value).attach('file', makeWav({ seconds: 1 }), 'a.wav');
+    const res = await upload()
+      .field('speakersExpected', value)
+      .attach('file', makeWav({ seconds: 1 }), 'a.wav');
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_INPUT');
     expect(res.body.error.message).toContain('1 to 10');
@@ -186,14 +203,18 @@ describe('POST /api/transcripts', () => {
   });
 
   it('rejects an invalid keepAudio value', async () => {
-    const res = await upload().field('keepAudio', 'maybe').attach('file', makeWav({ seconds: 1 }), 'a.wav');
+    const res = await upload()
+      .field('keepAudio', 'maybe')
+      .attach('file', makeWav({ seconds: 1 }), 'a.wav');
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe('INVALID_INPUT');
     expectNothingStored();
   });
 
   it('rejects oversized form fields', async () => {
-    const res = await upload().field('keepAudio', 'x'.repeat(5000)).attach('file', makeWav({ seconds: 1 }), 'a.wav');
+    const res = await upload()
+      .field('keepAudio', 'x'.repeat(5000))
+      .attach('file', makeWav({ seconds: 1 }), 'a.wav');
     expect(res.status).toBe(400);
     expectNothingStored();
   });
@@ -225,7 +246,10 @@ describe('upload size limit', () => {
   it('rejects early from Content-Length', async () => {
     const res = await upload().attach('file', makeWav({ seconds: 10 }), 'big.wav'); // ~160 KB
     expect(res.status).toBe(413);
-    expect(res.body.error).toMatchObject({ code: 'FILE_TOO_LARGE', message: expect.stringContaining('19.5 KB') });
+    expect(res.body.error).toMatchObject({
+      code: 'FILE_TOO_LARGE',
+      message: expect.stringContaining('19.5 KB'),
+    });
     expectNothingStored();
   });
 

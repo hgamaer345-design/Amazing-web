@@ -1,4 +1,9 @@
-import type { TranscriptDetail, TranscriptDocument, TranscriptProgress, TranscriptSummary } from '../shared/types';
+import type {
+  TranscriptDetail,
+  TranscriptDocument,
+  TranscriptProgress,
+  TranscriptSummary,
+} from '../shared/types';
 import type { TranscriptRecord } from './db';
 
 export function toSummary(rec: TranscriptRecord): TranscriptSummary {

@@ -62,8 +62,19 @@ export function SpeakerMenu({
       </button>
 
       {view === 'menu' ? (
-        <Popover controls={popover} role="menu" label={`Speaker of row ${rowNumber}`} className="spk-menu-popover">
-          <button type="button" role="menuitem" tabIndex={-1} className="menu-item" onClick={() => setView('rename')}>
+        <Popover
+          controls={popover}
+          role="menu"
+          label={`Speaker of row ${rowNumber}`}
+          className="spk-menu-popover"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            tabIndex={-1}
+            className="menu-item"
+            onClick={() => setView('rename')}
+          >
             Rename speaker…
           </button>
           <div role="separator" className="menu-separator" />
@@ -95,7 +106,13 @@ export function SpeakerMenu({
             })}
           </div>
           <div role="separator" className="menu-separator" />
-          <button type="button" role="menuitem" tabIndex={-1} className="menu-item" onClick={() => setView('new')}>
+          <button
+            type="button"
+            role="menuitem"
+            tabIndex={-1}
+            className="menu-item"
+            onClick={() => setView('new')}
+          >
             New speaker…
           </button>
         </Popover>

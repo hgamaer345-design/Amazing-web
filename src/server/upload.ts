@@ -7,8 +7,9 @@ import fsp from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import { parseFile, type IAudioMetadata } from 'music-metadata';
+import { DEFAULT_QUALITY_MODE, isQualityMode } from '../shared/quality';
 import { formatBytes } from '../shared/time';
-import { ACCEPTED_EXTENSIONS, type AcceptedExtension } from '../shared/types';
+import { ACCEPTED_EXTENSIONS, type AcceptedExtension, type QualityMode } from '../shared/types';
 import { AppError } from './errors';
 import { truncateText } from './http-utils';
 import { log } from './logger';
@@ -36,6 +37,8 @@ export const AUDIO_CONTENT_TYPES: Record<AcceptedExtension, string> = {
 export interface UploadLimits {
   maxUploadBytes: number;
   maxSpeakers: number;
+  /** Used when the form has no "quality" field. */
+  defaultQuality?: QualityMode;
 }
 
 export interface ReceivedUpload {
@@ -51,12 +54,14 @@ export interface ReceivedUpload {
   durationSec: number | null;
   speakersExpected: number | null;
   keepAudio: boolean;
+  quality: QualityMode;
 }
 
 interface UploadFields {
   speakersExpected: number | null;
   keepAudio: boolean;
   clientDurationSec: number | null;
+  quality: QualityMode;
 }
 
 interface PartFile {
@@ -145,8 +150,18 @@ export function parseClientDuration(value: string): number | null {
   return Number.isFinite(n) && n > 0 && n <= MAX_CLIENT_DURATION_SEC ? n : null;
 }
 
+/** "standard" | "high" | "ultra"; anything else is rejected. */
+export function parseQuality(value: string): QualityMode {
+  const v = value.trim().toLowerCase();
+  if (isQualityMode(v)) return v;
+  throw new AppError('INVALID_INPUT', 'quality must be "standard", "high" or "ultra".');
+}
+
 function applyField(fields: UploadFields, name: string, value: string, maxSpeakers: number): void {
   switch (name) {
+    case 'quality':
+      fields.quality = parseQuality(value);
+      break;
     case 'speakersExpected':
       fields.speakersExpected = parseSpeakersExpected(value, maxSpeakers);
       break;
@@ -162,13 +177,18 @@ function applyField(fields: UploadFields, name: string, value: string, maxSpeake
 }
 
 export function fileTooLarge(maxUploadBytes: number): AppError {
-  return new AppError('FILE_TOO_LARGE', `This file is too large. The maximum size is ${formatBytes(maxUploadBytes)}.`);
+  return new AppError(
+    'FILE_TOO_LARGE',
+    `This file is too large. The maximum size is ${formatBytes(maxUploadBytes)}.`,
+  );
 }
 
 function multipartError(err: unknown): AppError {
   const message = err instanceof Error ? err.message : String(err);
   if (/unexpected end of (form|file)/i.test(message)) return new AppError('UPLOAD_ABORTED');
-  return new AppError('INVALID_INPUT', 'The upload could not be read. Please try again.', { detail: message });
+  return new AppError('INVALID_INPUT', 'The upload could not be read. Please try again.', {
+    detail: message,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +260,12 @@ function receiveMultipart(
       return;
     }
 
-    const fields: UploadFields = { speakersExpected: null, keepAudio: false, clientDurationSec: null };
+    const fields: UploadFields = {
+      speakersExpected: null,
+      keepAudio: false,
+      clientDurationSec: null,
+      quality: limits.defaultQuality ?? DEFAULT_QUALITY_MODE,
+    };
     const abortWrite = new AbortController();
     let file: PartFile | null = null;
     let settled = false;
@@ -259,10 +284,15 @@ function receiveMultipart(
       abortWrite.abort();
       const part = file;
       const removed = part
-        ? part.written.catch(() => undefined).then(() => part.closed).then(() => storage.delete(part.partName))
+        ? part.written
+            .catch(() => undefined)
+            .then(() => part.closed)
+            .then(() => storage.delete(part.partName))
         : Promise.resolve();
       removed
-        .catch((cleanupErr: unknown) => log.warn('Could not remove partial upload', { file: part?.partName, err: cleanupErr }))
+        .catch((cleanupErr: unknown) =>
+          log.warn('Could not remove partial upload', { file: part?.partName, err: cleanupErr }),
+        )
         .finally(() => reject(err));
     };
 
@@ -331,8 +361,12 @@ function receiveMultipart(
     });
 
     bb.on('filesLimit', () => fail(new AppError('INVALID_INPUT', 'Upload one file at a time.')));
-    bb.on('fieldsLimit', () => fail(new AppError('INVALID_INPUT', undefined, { detail: 'Too many form fields.' })));
-    bb.on('partsLimit', () => fail(new AppError('INVALID_INPUT', undefined, { detail: 'Too many form parts.' })));
+    bb.on('fieldsLimit', () =>
+      fail(new AppError('INVALID_INPUT', undefined, { detail: 'Too many form fields.' })),
+    );
+    bb.on('partsLimit', () =>
+      fail(new AppError('INVALID_INPUT', undefined, { detail: 'Too many form parts.' })),
+    );
     bb.on('error', (err: unknown) => fail(multipartError(err)));
     bb.on('finish', () => {
       if (settled) return;
@@ -364,7 +398,9 @@ async function readDuration(filePath: string): Promise<number | null> {
     // from the content: a file whose extension doesn't match its container still parses correctly.
     format = (await parseFile(filePath, { duration: true })).format;
   } catch (err) {
-    log.info('Uploaded file could not be parsed as audio', { error: err instanceof Error ? err.name : 'Error' });
+    log.info('Uploaded file could not be parsed as audio', {
+      error: err instanceof Error ? err.name : 'Error',
+    });
     throw new AppError('UNREADABLE_AUDIO', undefined, { cause: err });
   }
   // music-metadata is lenient: a valid container header followed by garbage "parses" without
@@ -387,7 +423,8 @@ export async function receiveUpload(
   limits: UploadLimits,
 ): Promise<ReceivedUpload> {
   const declaredLength = Number(req.headers['content-length']);
-  if (declaredLength > limits.maxUploadBytes + MULTIPART_OVERHEAD_BYTES) throw fileTooLarge(limits.maxUploadBytes);
+  if (declaredLength > limits.maxUploadBytes + MULTIPART_OVERHEAD_BYTES)
+    throw fileTooLarge(limits.maxUploadBytes);
 
   const { fields, file } = await receiveMultipart(req, storage, limits);
   const partPath = storage.absPath(file.partName);
@@ -405,10 +442,12 @@ export async function receiveUpload(
       durationSec: parsedDuration ?? fields.clientDurationSec,
       speakersExpected: fields.speakersExpected,
       keepAudio: fields.keepAudio,
+      quality: fields.quality,
     };
   } catch (err) {
-    await Promise.all([storage.delete(file.partName), storage.delete(file.finalName)]).catch((cleanupErr: unknown) =>
-      log.warn('Could not remove rejected upload', { file: file.partName, err: cleanupErr }),
+    await Promise.all([storage.delete(file.partName), storage.delete(file.finalName)]).catch(
+      (cleanupErr: unknown) =>
+        log.warn('Could not remove rejected upload', { file: file.partName, err: cleanupErr }),
     );
     throw err;
   }

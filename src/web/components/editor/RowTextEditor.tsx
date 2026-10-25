@@ -1,4 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from 'react';
 import { DOCUMENT_LIMITS } from '../../../shared/document';
 
 export interface RowTextEditorProps {
@@ -70,10 +78,20 @@ export function RowTextEditor({ initialText, label, onCommit, onCancel }: RowTex
           Enter to save · Shift+Enter for a new line · Esc to cancel
         </span>
         <span className="tx-editor-buttons">
-          <button type="button" className="btn btn-primary btn-sm" onMouseDown={keepFocus} onClick={() => finish(true, true)}>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onMouseDown={keepFocus}
+            onClick={() => finish(true, true)}
+          >
             Save
           </button>
-          <button type="button" className="btn btn-sm" onMouseDown={keepFocus} onClick={() => finish(false, true)}>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onMouseDown={keepFocus}
+            onClick={() => finish(false, true)}
+          >
             Cancel
           </button>
         </span>

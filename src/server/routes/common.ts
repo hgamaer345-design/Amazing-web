@@ -18,6 +18,9 @@ export async function deleteStoredAudio(storage: AudioStorage, fileName: string)
   try {
     await storage.delete(fileName);
   } catch (err) {
-    log.warn('Could not delete audio file', { file: fileName, error: err instanceof Error ? err.message : String(err) });
+    log.warn('Could not delete audio file', {
+      file: fileName,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }

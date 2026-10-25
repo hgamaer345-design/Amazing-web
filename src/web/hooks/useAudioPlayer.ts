@@ -203,18 +203,15 @@ export function useAudioPlayer({ src, fallbackDurationMs, onError }: AudioPlayer
 
   const skip = useCallback((deltaMs: number) => seek(time.get() + deltaMs), [seek, time]);
 
-  const setRate = useCallback(
-    (next: number) => {
-      rateRef.current = next;
-      setRateState(next);
-      const node = elRef.current;
-      if (node) {
-        node.defaultPlaybackRate = next;
-        node.playbackRate = next;
-      }
-    },
-    [],
-  );
+  const setRate = useCallback((next: number) => {
+    rateRef.current = next;
+    setRateState(next);
+    const node = elRef.current;
+    if (node) {
+      node.defaultPlaybackRate = next;
+      node.playbackRate = next;
+    }
+  }, []);
 
   return { audioRef, time, status, playing, durationMs, rate, toggle, play, pause, seek, skip, setRate };
 }

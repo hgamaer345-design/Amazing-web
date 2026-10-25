@@ -77,7 +77,9 @@ export function mapAssemblyAiTranscript(t: AaiTranscript): ProviderResult {
       }
     }
   } else if (t.text?.trim()) {
-    segments = [{ speaker: null, startMs: 0, endMs: Math.round((t.audio_duration ?? 0) * 1000), text: t.text }];
+    segments = [
+      { speaker: null, startMs: 0, endMs: Math.round((t.audio_duration ?? 0) * 1000), text: t.text },
+    ];
   } else {
     segments = [];
   }
@@ -87,7 +89,12 @@ export function mapAssemblyAiTranscript(t: AaiTranscript): ProviderResult {
     durationSec: typeof t.audio_duration === 'number' ? t.audio_duration : null,
     ...(t.words?.length
       ? {
-          words: t.words.map((w) => ({ speaker: w.speaker ?? null, startMs: w.start, endMs: w.end, text: w.text })),
+          words: t.words.map((w) => ({
+            speaker: w.speaker ?? null,
+            startMs: w.start,
+            endMs: w.end,
+            text: w.text,
+          })),
         }
       : {}),
   };
@@ -119,7 +126,8 @@ export function createAssemblyAiProvider(opts: AssemblyAiOptions): Transcription
             jobStillValid: false,
           });
         }
-        if (!(err instanceof ProviderError) || err.kind !== 'transient' || ++failures > maxPollFailures) throw err;
+        if (!(err instanceof ProviderError) || err.kind !== 'transient' || ++failures > maxPollFailures)
+          throw err;
         await sleep(Math.max(opts.pollIntervalMs, err.retryAfterMs ?? 0) * failures, signal);
         continue;
       }
@@ -160,7 +168,11 @@ export function createAssemblyAiProvider(opts: AssemblyAiOptions): Transcription
       if (req.speakersExpected != null) body.speakers_expected = req.speakersExpected;
       const created = await providerFetch(
         `${opts.baseUrl}/v2/transcript`,
-        { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) },
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
         { label: LABEL, apiKey: opts.apiKey, signal: req.signal, timeoutMs: 60_000 },
       );
       const transcript = await readJson<AaiTranscript>(created, { label: LABEL });

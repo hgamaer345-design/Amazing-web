@@ -14,9 +14,9 @@ describe('sniffContainer', () => {
     expect(sniffContainer(ascii('\x00\x00\x00\x18ftypisom'))).toBe('mp4');
     expect(sniffContainer(ascii('OggS\x00\x02\x00\x00\x00\x00\x00\x00'))).toBe('ogg');
     expect(sniffContainer(ascii('fLaC\x00\x00\x00\x22\x10\x00\x10\x00'))).toBe('flac');
-    expect(sniffContainer(bytes(0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81))).toBe(
-      'webm',
-    );
+    expect(
+      sniffContainer(bytes(0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81, 0x01, 0x42, 0xf7, 0x81)),
+    ).toBe('webm');
   });
 
   it('needs no more than SNIFF_BYTES', () => {

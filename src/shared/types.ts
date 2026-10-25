@@ -112,8 +112,8 @@ export interface TranscriptSummary {
   durationSec: number | null;
   status: TranscriptStatus;
   provider: ProviderName;
-  /** Quality mode the file was (or is being) transcribed with. (Optional until integration; always sent.) */
-  quality?: QualityMode;
+  /** Quality mode the file was (or is being) transcribed with. */
+  quality: QualityMode;
   /** BCP-47-ish language code detected by the provider, e.g. "en", "es", "en_us". */
   languageCode: string | null;
   speakersExpected: number | null;
@@ -149,9 +149,9 @@ export interface AppConfigResponse {
   maxSpeakers: number;
   /** Static demo build (no server): transcription is simulated in the browser. */
   demoMode?: boolean;
-  /** Quality modes in display order, with their free daily limits. (Optional until integration; always sent.) */
-  qualityModes?: QualityModeInfo[];
-  defaultQuality?: QualityMode;
+  /** Quality modes in display order, with their free daily limits. */
+  qualityModes: QualityModeInfo[];
+  defaultQuality: QualityMode;
 }
 
 export interface QualityModeInfo {

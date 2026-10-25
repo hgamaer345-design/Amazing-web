@@ -68,7 +68,8 @@ export function generateMockSegments(durationSec: number, speakerCount: number, 
     });
     t += length + 150 + random() * 450;
     i++;
-    if (speakers > 1 && random() > 0.35) speaker = (speaker + 1 + Math.floor(random() * (speakers - 1))) % speakers;
+    if (speakers > 1 && random() > 0.35)
+      speaker = (speaker + 1 + Math.floor(random() * (speakers - 1))) % speakers;
   }
   return segments;
 }

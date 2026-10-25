@@ -267,8 +267,7 @@ export class TranscriptRepository {
 
   get(id: string): TranscriptRecord | undefined {
     const row = this.db.prepare(`SELECT ${RECORD_COLUMNS} FROM transcripts WHERE id = ?`).get(id) as
-      | Row
-      | undefined;
+      Row | undefined;
     return row ? toRecord(row) : undefined;
   }
 
@@ -292,8 +291,7 @@ export class TranscriptRepository {
   /** 1-based position among queued jobs (oldest first), or null if the job is not queued. */
   queuePosition(id: string): number | null {
     const rec = this.db.prepare(`SELECT status, created_at FROM transcripts WHERE id = ?`).get(id) as
-      | { status: string; created_at: string }
-      | undefined;
+      { status: string; created_at: string } | undefined;
     if (!rec || rec.status !== 'queued') return null;
     const { ahead } = this.db
       .prepare(
@@ -317,9 +315,9 @@ export class TranscriptRepository {
 
   /** Stored audio file names that a transcript still references. */
   referencedAudioFiles(): Set<string> {
-    const rows = this.db
-      .prepare(`SELECT audio_file FROM transcripts WHERE audio_file IS NOT NULL`)
-      .all() as { audio_file: string }[];
+    const rows = this.db.prepare(`SELECT audio_file FROM transcripts WHERE audio_file IS NOT NULL`).all() as {
+      audio_file: string;
+    }[];
     return new Set(rows.map((r) => r.audio_file));
   }
 
@@ -406,8 +404,7 @@ export class TranscriptRepository {
   takeAudioFile(id: string): string | null {
     return this.db.transaction(() => {
       const row = this.db.prepare(`SELECT audio_file FROM transcripts WHERE id = ?`).get(id) as
-        | { audio_file: string | null }
-        | undefined;
+        { audio_file: string | null } | undefined;
       if (!row?.audio_file) return null;
       this.db
         .prepare(`UPDATE transcripts SET audio_file = NULL, updated_at = ? WHERE id = ?`)
@@ -426,7 +423,10 @@ export class TranscriptRepository {
     return res === 'quota' ? undefined : res;
   }
 
-  retryWithQuota(id: string, quota?: { day: string; limit: number | null }): TranscriptRecord | undefined | 'quota' {
+  retryWithQuota(
+    id: string,
+    quota?: { day: string; limit: number | null },
+  ): TranscriptRecord | undefined | 'quota' {
     return this.db.transaction(() => {
       const rec = this.get(id);
       if (!rec || rec.status !== 'error' || !rec.audioFile) return undefined;
@@ -452,9 +452,8 @@ export class TranscriptRepository {
     body: { speakers: Speaker[]; rows: TranscriptRow[] },
   ): SaveDocumentResult {
     return this.db.transaction((): SaveDocumentResult => {
-      const row = this.db
-        .prepare(`SELECT status, document_version FROM transcripts WHERE id = ?`)
-        .get(id) as { status: string; document_version: number } | undefined;
+      const row = this.db.prepare(`SELECT status, document_version FROM transcripts WHERE id = ?`).get(id) as
+        { status: string; document_version: number } | undefined;
       if (!row) return { ok: false, reason: 'not_found' };
       if (row.status !== 'done') return { ok: false, reason: 'not_ready' };
       if (row.document_version !== baseVersion) {

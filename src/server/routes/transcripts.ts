@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import express, { Router } from 'express';
 import { z } from 'zod';
 import { findDocumentProblems, saveDocumentRequestSchema } from '../../shared/document';
+import { DEFAULT_QUALITY_MODE, isQualityMode, utcDay } from '../../shared/quality';
 import type {
   CreateTranscriptResponse,
   GetTranscriptResponse,
@@ -16,6 +17,7 @@ import { AppError } from '../errors';
 import { estimateProcessingSeconds } from '../eta';
 import { discardBodyAfterResponse } from '../http-utils';
 import { log } from '../logger';
+import { clientKey } from '../quota';
 import { toDetail, toSummary } from '../serialize';
 import { MAX_TITLE_LENGTH, normalizeTitle, receiveUpload } from '../upload';
 import { deleteStoredAudio, requireTranscript } from './common';
@@ -43,10 +45,16 @@ function summarize(problems: string[]): string {
 }
 
 function zodProblems(error: z.ZodError): string[] {
-  return error.issues.map((issue) => (issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message));
+  return error.issues.map((issue) =>
+    issue.path.length ? `${issue.path.join('.')}: ${issue.message}` : issue.message,
+  );
 }
 
-const IN_PROGRESS: ReadonlySet<TranscriptRecord['status']> = new Set(['queued', 'transcribing', 'separating']);
+const IN_PROGRESS: ReadonlySet<TranscriptRecord['status']> = new Set([
+  'queued',
+  'transcribing',
+  'separating',
+]);
 
 /** /api/transcripts — upload, history, editing and lifecycle actions. */
 export function transcriptsRouter(deps: AppDeps): Router {
@@ -59,45 +67,73 @@ export function transcriptsRouter(deps: AppDeps): Router {
     discardBodyAfterResponse(req, res);
     if (!config.providerConfigured || !provider) throw new AppError('PROVIDER_NOT_CONFIGURED');
 
+    // The web client also puts the quality in the query string so a request that is over the
+    // daily limit is refused before a possibly huge file is uploaded for nothing.
+    const quotaKey = clientKey(req);
+    const day = utcDay(now());
+    const hinted = typeof req.query.quality === 'string' ? req.query.quality : undefined;
+    if (hinted && isQualityMode(hinted)) {
+      const limit = config.qualityLimits[hinted];
+      if (limit != null && repo.usage(quotaKey, hinted, day, limit).remaining === 0) {
+        throw new AppError('QUOTA_EXCEEDED');
+      }
+    }
+
     const upload = await receiveUpload(req, storage, {
       maxUploadBytes: config.maxUploadBytes,
       maxSpeakers: config.maxSpeakers,
+      defaultQuality: hinted && isQualityMode(hinted) ? hinted : DEFAULT_QUALITY_MODE,
     });
-    let rec: TranscriptRecord;
+    let rec: TranscriptRecord | null;
     try {
-      rec = repo.create({
-        id: randomUUID(),
-        title: upload.title,
-        originalFilename: upload.originalFilename,
-        mimeType: upload.mimeType,
-        extension: upload.extension,
-        sizeBytes: upload.sizeBytes,
-        durationSec: upload.durationSec,
-        provider: provider.name,
-        // The hint is meaningless for providers that ignore it; don't record it as if it were used.
-        speakersExpected: provider.supportsSpeakerCount ? upload.speakersExpected : null,
-        keepAudio: upload.keepAudio,
-        audioFile: upload.fileName,
-        estimatedTotalSeconds: estimateProcessingSeconds(
-          provider.name,
-          upload.durationSec,
-          repo.processingStats(provider.name),
-          upload.sizeBytes,
-        ),
-      });
+      rec = repo.createWithQuota(
+        {
+          id: randomUUID(),
+          title: upload.title,
+          originalFilename: upload.originalFilename,
+          mimeType: upload.mimeType,
+          extension: upload.extension,
+          sizeBytes: upload.sizeBytes,
+          durationSec: upload.durationSec,
+          provider: provider.name,
+          // The hint is meaningless for providers that ignore it; don't record it as if it were used.
+          speakersExpected: provider.supportsSpeakerCount ? upload.speakersExpected : null,
+          keepAudio: upload.keepAudio,
+          audioFile: upload.fileName,
+          quality: upload.quality,
+          quotaKey,
+          quotaDay: day,
+          estimatedTotalSeconds: estimateProcessingSeconds(
+            provider.name,
+            upload.durationSec,
+            repo.processingStats(provider.name),
+            upload.sizeBytes,
+            upload.quality,
+          ),
+        },
+        config.qualityLimits[upload.quality],
+      );
     } catch (err) {
       await deleteStoredAudio(storage, upload.fileName);
       throw err;
+    }
+    if (!rec) {
+      await deleteStoredAudio(storage, upload.fileName);
+      throw new AppError('QUOTA_EXCEEDED');
     }
     log.info('Transcript queued', {
       id: rec.id,
       sizeBytes: rec.sizeBytes,
       durationSec: rec.durationSec,
       provider: rec.provider,
+      quality: rec.quality,
     });
     worker?.kick();
     const body: CreateTranscriptResponse = { transcript: toSummary(rec) };
-    res.status(201).location(`/api/transcripts/${encodeURIComponent(rec.id)}`).json(body);
+    res
+      .status(201)
+      .location(`/api/transcripts/${encodeURIComponent(rec.id)}`)
+      .json(body);
   });
 
   router.get('/', (_req, res) => {
@@ -108,7 +144,9 @@ export function transcriptsRouter(deps: AppDeps): Router {
   router.get('/:id', (req, res) => {
     const rec = requireTranscript(repo, req.params.id);
     const document = rec.status === 'done' ? repo.getDocument(rec.id) : null;
-    const body: GetTranscriptResponse = { transcript: toDetail(rec, document, repo.queuePosition(rec.id), now()) };
+    const body: GetTranscriptResponse = {
+      transcript: toDetail(rec, document, repo.queuePosition(rec.id), now()),
+    };
     res.json(body);
   });
 
@@ -195,12 +233,22 @@ export function transcriptsRouter(deps: AppDeps): Router {
       throw new AppError('CANNOT_RETRY');
     }
     if (!config.providerConfigured || !provider) throw new AppError('PROVIDER_NOT_CONFIGURED');
+    const updated = repo.retryWithQuota(rec.id, {
+      day: utcDay(now()),
+      limit: config.qualityLimits[rec.quality],
+    });
+    if (updated === 'quota') throw new AppError('QUOTA_EXCEEDED');
+    if (!updated) throw new AppError('CANNOT_RETRY');
     repo.setEstimate(
       rec.id,
-      estimateProcessingSeconds(provider.name, rec.durationSec, repo.processingStats(provider.name), rec.sizeBytes),
+      estimateProcessingSeconds(
+        provider.name,
+        rec.durationSec,
+        repo.processingStats(provider.name),
+        rec.sizeBytes,
+        rec.quality,
+      ),
     );
-    const updated = repo.retry(rec.id);
-    if (!updated) throw new AppError('CANNOT_RETRY');
     log.info('Transcript queued for retry', { id: rec.id });
     worker?.kick();
     res.json({ transcript: toSummary(updated) });

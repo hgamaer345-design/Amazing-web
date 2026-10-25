@@ -7,7 +7,11 @@ export class AppError extends Error {
   readonly status: number;
   readonly detail: string | undefined;
 
-  constructor(code: ErrorCode, message?: string, options?: { detail?: string; status?: number; cause?: unknown }) {
+  constructor(
+    code: ErrorCode,
+    message?: string,
+    options?: { detail?: string; status?: number; cause?: unknown },
+  ) {
     super(message ?? ERROR_MESSAGES[code], { cause: options?.cause });
     this.name = 'AppError';
     this.code = code;

@@ -66,7 +66,8 @@ function chunkText(text: string, maxChars: number, maxChunks: number): string[] 
   let chunks: string[] = [];
   for (const piece of pieces) {
     const last = chunks[chunks.length - 1];
-    if (last != null && last.length + 1 + piece.length <= maxChars) chunks[chunks.length - 1] = `${last} ${piece}`;
+    if (last != null && last.length + 1 + piece.length <= maxChars)
+      chunks[chunks.length - 1] = `${last} ${piece}`;
     else chunks.push(piece);
   }
 
@@ -98,7 +99,11 @@ function rowToCues(row: ExportRow): Cue[] {
   let chunks = chunkText(text, maxChars, maxChunksByDuration);
   // Very long cues (in time) are split further when there is enough text to share.
   if (chunks.length < minChunksByDuration && chunks.length > 0) {
-    const finer = chunkText(text, Math.max(20, Math.ceil(text.length / minChunksByDuration)), maxChunksByDuration);
+    const finer = chunkText(
+      text,
+      Math.max(20, Math.ceil(text.length / minChunksByDuration)),
+      maxChunksByDuration,
+    );
     if (finer.length > chunks.length) chunks = finer;
   }
   const total = chunks.reduce((n, c) => n + c.length, 0) || 1;
@@ -107,7 +112,8 @@ function rowToCues(row: ExportRow): Cue[] {
   chunks.forEach((chunk, i) => {
     const startMs = row.startMs + Math.round((span * consumed) / total);
     consumed += chunk.length;
-    const endMs = i === chunks.length - 1 ? row.startMs + span : row.startMs + Math.round((span * consumed) / total);
+    const endMs =
+      i === chunks.length - 1 ? row.startMs + span : row.startMs + Math.round((span * consumed) / total);
     cues.push({ startMs, endMs, text: chunk, speaker: row.speakerName });
   });
   return cues;

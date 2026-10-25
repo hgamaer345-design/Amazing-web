@@ -1,7 +1,12 @@
 import { useRef, type CSSProperties, type KeyboardEvent } from 'react';
 import { formatHms } from '../../../shared/time';
 import { ACCEPTED_EXTENSIONS } from '../../../shared/types';
-import { PLAYBACK_RATES, usePlaybackTime, type AudioPlayer as Player, type TimeStore } from '../../hooks/useAudioPlayer';
+import {
+  PLAYBACK_RATES,
+  usePlaybackTime,
+  type AudioPlayer as Player,
+  type TimeStore,
+} from '../../hooks/useAudioPlayer';
 import { AttachIcon, BackIcon, ForwardIcon, PauseIcon, PlayIcon } from './icons';
 
 const ACCEPT = [...ACCEPTED_EXTENSIONS.map((ext) => `.${ext}`), 'audio/*'].join(',');
@@ -98,7 +103,14 @@ function SeekBar({ player }: { player: Player }) {
 }
 
 /** Sticky audio bar: play/pause, ±5 s, seek, time, speed and "Follow along"; or a notice to attach a file. */
-export function AudioPlayer({ player, source, error, followAlong, onFollowAlongChange, onAttachFile }: AudioPlayerProps) {
+export function AudioPlayer({
+  player,
+  source,
+  error,
+  followAlong,
+  onFollowAlongChange,
+  onAttachFile,
+}: AudioPlayerProps) {
   const failed = player.status === 'error';
 
   return (
@@ -113,8 +125,8 @@ export function AudioPlayer({ player, source, error, followAlong, onFollowAlongC
               </>
             ) : (
               <>
-                <strong>Audio was deleted from the server after processing.</strong> Attach the original file to
-                play it along with the transcript. It stays on this device.
+                <strong>Audio was deleted from the server after processing.</strong> Attach the original file
+                to play it along with the transcript. It stays on this device.
               </>
             )}
           </div>

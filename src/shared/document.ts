@@ -53,7 +53,8 @@ export function findDocumentProblems(doc: { speakers: Speaker[]; rows: Transcrip
   doc.rows.forEach((r, i) => {
     if (rowIds.has(r.id)) problems.push(`Duplicate row id "${r.id}"`);
     rowIds.add(r.id);
-    if (!speakerIds.has(r.speakerId)) problems.push(`Row ${i + 1} references unknown speaker "${r.speakerId}"`);
+    if (!speakerIds.has(r.speakerId))
+      problems.push(`Row ${i + 1} references unknown speaker "${r.speakerId}"`);
     if (r.endMs < r.startMs) problems.push(`Row ${i + 1} ends before it starts`);
     if (r.startMs < prevStart) problems.push(`Row ${i + 1} is out of chronological order`);
     prevStart = r.startMs;

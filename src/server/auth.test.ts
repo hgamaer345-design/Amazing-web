@@ -8,7 +8,10 @@ const basic = (user: string, password: string) =>
 describe('parseBasicAuth', () => {
   it('decodes user and password (the password may contain colons and non-ASCII)', () => {
     expect(parseBasicAuth(basic('admin', 'pä:ss:wörd'))).toEqual({ user: 'admin', password: 'pä:ss:wörd' });
-    expect(parseBasicAuth(`basic  ${Buffer.from('a:').toString('base64')}`)).toEqual({ user: 'a', password: '' });
+    expect(parseBasicAuth(`basic  ${Buffer.from('a:').toString('base64')}`)).toEqual({
+      user: 'a',
+      password: '',
+    });
   });
 
   it('rejects missing and malformed headers', () => {

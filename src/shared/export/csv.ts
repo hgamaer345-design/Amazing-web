@@ -13,9 +13,7 @@ function cell(value: string, guardFormula: boolean): string {
 export function toCsv(rows: ExportRow[]): string {
   const lines = ['#,Speaker,Start,End,Text'];
   for (const r of rows) {
-    lines.push(
-      [String(r.number), cell(r.speakerName, true), r.start, r.end, cell(r.text, true)].join(','),
-    );
+    lines.push([String(r.number), cell(r.speakerName, true), r.start, r.end, cell(r.text, true)].join(','));
   }
   return `﻿${lines.join('\r\n')}\r\n`;
 }

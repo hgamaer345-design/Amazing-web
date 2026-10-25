@@ -64,7 +64,10 @@ export function downloadFileName(title: string, extension: string): string {
 
 /** Percent-encodes a value for an RFC 5987 `ext-value` (only attr-chars stay literal). */
 function encodeRfc5987(value: string): string {
-  return encodeURIComponent(value).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(value).replace(
+    /['()*]/g,
+    (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
 }
 
 /**
@@ -101,7 +104,8 @@ interface HttpErrorLike {
 function httpStatusOf(err: unknown): number | null {
   if (typeof err !== 'object' || err === null) return null;
   const e = err as HttpErrorLike;
-  const status = typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : null;
+  const status =
+    typeof e.status === 'number' ? e.status : typeof e.statusCode === 'number' ? e.statusCode : null;
   return status != null && Number.isInteger(status) && status >= 400 && status < 600 ? status : null;
 }
 
@@ -113,7 +117,8 @@ function httpStatusOf(err: unknown): number | null {
 export function toAppError(err: unknown): AppError {
   if (isAppError(err)) return err;
   const status = httpStatusOf(err);
-  if (status == null || status >= 500 || (err as HttpErrorLike).expose === false) return new AppError('INTERNAL');
+  if (status == null || status >= 500 || (err as HttpErrorLike).expose === false)
+    return new AppError('INTERNAL');
   switch ((err as HttpErrorLike).type) {
     case 'entity.parse.failed':
       return new AppError('INVALID_INPUT', 'The request body is not valid JSON.', { status: 400 });
@@ -158,5 +163,7 @@ export const errorHandler: ErrorRequestHandler = (err: unknown, req, res, next) 
 
 /** JSON 404 for unknown API routes. */
 export const apiNotFound: RequestHandler = (req, _res, next) => {
-  next(new AppError('NOT_FOUND', 'Unknown API endpoint.', { detail: `${req.method} ${req.baseUrl}${req.path}` }));
+  next(
+    new AppError('NOT_FOUND', 'Unknown API endpoint.', { detail: `${req.method} ${req.baseUrl}${req.path}` }),
+  );
 };

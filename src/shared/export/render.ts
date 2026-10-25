@@ -40,7 +40,11 @@ export async function renderExport(format: ExportFormat, input: ExportInput): Pr
     case 'txt':
       return { bytes: utf8(toTxt(rows)), contentType: 'text/plain; charset=utf-8', fileExtension: 'txt' };
     case 'srt':
-      return { bytes: utf8(toSrt(rows)), contentType: 'application/x-subrip; charset=utf-8', fileExtension: 'srt' };
+      return {
+        bytes: utf8(toSrt(rows)),
+        contentType: 'application/x-subrip; charset=utf-8',
+        fileExtension: 'srt',
+      };
     case 'xlsx':
       return {
         bytes: await toXlsx(rows, input),

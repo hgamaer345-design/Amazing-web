@@ -3,7 +3,8 @@ import type { ErrorCode } from './types';
 /** Default user-facing message for each error code. Servers may send a more specific message. */
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   NO_FILE: 'Choose an audio file to upload.',
-  UNSUPPORTED_FILE: 'This file type is not supported. Upload an MP3, WAV, M4A, OGG, FLAC, or WEBM audio file.',
+  UNSUPPORTED_FILE:
+    'This file type is not supported. Upload an MP3, WAV, M4A, OGG, FLAC, or WEBM audio file.',
   FILE_TOO_LARGE: 'This file is too large. The maximum size is 500 MB.',
   EMPTY_FILE: 'This file is empty.',
   UNREADABLE_AUDIO: 'This file could not be read as audio. It may be damaged or not actually an audio file.',
@@ -20,7 +21,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   TRANSCRIPTION_FAILED: 'Transcription failed. Please try again.',
   TRANSCRIPTION_TIMEOUT: 'Transcription took too long and was stopped. Please try again.',
   NO_SPEECH: 'No speech was detected in this audio.',
-  CANNOT_RETRY: 'This transcript cannot be retried because its audio is no longer stored. Upload the file again.',
+  CANNOT_RETRY:
+    'This transcript cannot be retried because its audio is no longer stored. Upload the file again.',
   QUOTA_EXCEEDED:
     'You’ve used all of today’s free Ultra High transcriptions. Choose High or Standard, or try again tomorrow.',
   UNAUTHORIZED: 'You need to sign in to use this app.',

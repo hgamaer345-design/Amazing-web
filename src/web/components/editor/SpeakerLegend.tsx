@@ -21,7 +21,11 @@ function rowCountLabel(count: number): string {
 }
 
 /** One chip per speaker in its colour, with its row count. Click a chip to rename the speaker inline. */
-export const SpeakerLegend = memo(function SpeakerLegend({ speakers, rowCounts, onRename }: SpeakerLegendProps) {
+export const SpeakerLegend = memo(function SpeakerLegend({
+  speakers,
+  rowCounts,
+  onRename,
+}: SpeakerLegendProps) {
   const headingId = useId();
   const [editingId, setEditingId] = useState<string | null>(null);
   const chipRefs = useRef(new Map<string, HTMLButtonElement>());

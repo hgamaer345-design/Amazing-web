@@ -109,7 +109,12 @@ describe('TranscriptRepository', () => {
   it('enforces daily quality limits: pending and finished jobs count, failures and deletions do not refund', () => {
     const { repo, clock } = setup();
     const day = '2026-01-01';
-    const ultra = (id: string) => ({ ...input(id), quality: 'ultra' as const, quotaKey: 'client-1', quotaDay: day });
+    const ultra = (id: string) => ({
+      ...input(id),
+      quality: 'ultra' as const,
+      quotaKey: 'client-1',
+      quotaDay: day,
+    });
     expect(repo.usage('client-1', 'ultra', day, 2)).toEqual({ used: 0, limit: 2, remaining: 2 });
 
     expect(repo.createWithQuota(ultra('a'), 2)?.quality).toBe('ultra');
@@ -158,6 +163,9 @@ describe('TranscriptRepository', () => {
     expect(saved).toMatchObject({ ok: true, document: { version: 2 } });
     const stale = repo.saveDocument('a', 1, { speakers, rows: [] });
     expect(stale).toMatchObject({ ok: false, reason: 'conflict', document: { version: 2 } });
-    expect(repo.saveDocument('missing', 1, { speakers, rows: [] })).toEqual({ ok: false, reason: 'not_found' });
+    expect(repo.saveDocument('missing', 1, { speakers, rows: [] })).toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
   });
 });

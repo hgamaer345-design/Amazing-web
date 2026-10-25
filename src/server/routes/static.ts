@@ -30,11 +30,15 @@ export function staticRouter(publicDir: string): Router {
       next();
       return;
     }
-    res.sendFile(indexFile, { headers: { 'Cache-Control': 'no-cache' } }, (err?: Error & { status?: number }) => {
-      if (!err || res.headersSent) return;
-      // No index.html (the client hasn't been built): fall through to the 404 handler.
-      next(err.status === 404 || (err as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : err);
-    });
+    res.sendFile(
+      indexFile,
+      { headers: { 'Cache-Control': 'no-cache' } },
+      (err?: Error & { status?: number }) => {
+        if (!err || res.headersSent) return;
+        // No index.html (the client hasn't been built): fall through to the 404 handler.
+        next(err.status === 404 || (err as NodeJS.ErrnoException).code === 'ENOENT' ? undefined : err);
+      },
+    );
   });
 
   return router;

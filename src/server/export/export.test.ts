@@ -114,7 +114,10 @@ describe('TXT', () => {
     const txt = toTxt(
       buildExportRows({
         ...doc,
-        rows: [...doc.rows.slice(0, 2), { id: 'e', speakerId: 'spk_1', startMs: 10_000, endMs: 10_000, text: '  ' }],
+        rows: [
+          ...doc.rows.slice(0, 2),
+          { id: 'e', speakerId: 'spk_1', startMs: 10_000, endMs: 10_000, text: '  ' },
+        ],
       }),
     );
     expect(txt).toBe(
@@ -127,9 +130,11 @@ describe('TXT', () => {
 describe('SRT', () => {
   it('numbers cues, formats timestamps and prefixes the speaker', () => {
     const srt = toSrt(buildExportRows(doc));
-    expect(srt.startsWith('1\r\n00:00:00,000 --> 00:00:04,200\r\nInterviewer: Welcome to the show. How are\r\nyou?\r\n')).toBe(
-      true,
-    );
+    expect(
+      srt.startsWith(
+        '1\r\n00:00:00,000 --> 00:00:04,200\r\nInterviewer: Welcome to the show. How are\r\nyou?\r\n',
+      ),
+    ).toBe(true);
     const cues = srtCues(srt);
     expect(cues.map((c) => c.num)).toEqual(cues.map((_, i) => i + 1));
     expect(cues.at(-1)!.lines.join(' ')).toBe('Interviewer: =SUM(A1) & <b>bold</b>');
@@ -185,9 +190,12 @@ describe('SRT', () => {
       if (i > 0) expect(cues[i]!.start).toBeGreaterThanOrEqual(cues[i - 1]!.end);
     }
     expect(cues.some((c) => c.lines.join('').includes('   '))).toBe(false);
-    expect(cues.filter((c) => c.lines.join('').includes('xxx')).map((c) => c.lines.join('')).join('')).toContain(
-      longWord.slice(0, 40),
-    );
+    expect(
+      cues
+        .filter((c) => c.lines.join('').includes('xxx'))
+        .map((c) => c.lines.join(''))
+        .join(''),
+    ).toContain(longWord.slice(0, 40));
     expect(cues[0]).toMatchObject({ start: 1000, end: 1200 });
   });
 
@@ -195,7 +203,9 @@ describe('SRT', () => {
     const rows = buildExportRows({
       version: 1,
       speakers: [{ id: 's', name: 'S', colorIndex: 0 }],
-      rows: [{ id: 'a', speakerId: 's', startMs: 0, endMs: 900, text: 'One. Two. Three. Four. Five. Six. Seven.' }],
+      rows: [
+        { id: 'a', speakerId: 's', startMs: 0, endMs: 900, text: 'One. Two. Three. Four. Five. Six. Seven.' },
+      ],
     });
     const cues = srtCues(toSrt(rows));
     expect(cues).toHaveLength(1);
@@ -204,7 +214,9 @@ describe('SRT', () => {
 
   it('wraps cue text to two lines where possible', () => {
     expect(wrapCueText('short')).toEqual(['short']);
-    const lines = wrapCueText('Speaker 1: a b c d e f g h i j k l m n o p q r s t u v w x y z aa bb cc dd ee');
+    const lines = wrapCueText(
+      'Speaker 1: a b c d e f g h i j k l m n o p q r s t u v w x y z aa bb cc dd ee',
+    );
     expect(lines.length).toBeLessThanOrEqual(2);
   });
 
@@ -235,7 +247,10 @@ describe('XLSX', () => {
     expect(ws.getCell('E3').alignment?.wrapText).toBe(true);
     const infoSheet = wb.getWorksheet('Info')!;
     const info = Object.fromEntries(
-      infoSheet.getSheetValues().filter(Boolean).map((v) => [(v as unknown[])[1], (v as unknown[])[2]]),
+      infoSheet
+        .getSheetValues()
+        .filter(Boolean)
+        .map((v) => [(v as unknown[])[1], (v as unknown[])[2]]),
     );
     expect(info).toMatchObject({
       Title: 'Interview — Ünïcode',

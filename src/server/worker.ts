@@ -228,7 +228,12 @@ export function createWorker(deps: WorkerDeps): JobWorker {
 
     try {
       if (rec.attempts > maxAttempts) {
-        await fail(p, rec, state.providerJobId, jobError('TRANSCRIPTION_FAILED', `Gave up after ${maxAttempts} attempts.`));
+        await fail(
+          p,
+          rec,
+          state.providerJobId,
+          jobError('TRANSCRIPTION_FAILED', `Gave up after ${maxAttempts} attempts.`),
+        );
         return;
       }
       if (remainingMs <= 0) {
@@ -237,7 +242,13 @@ export function createWorker(deps: WorkerDeps): JobWorker {
       }
       repo.setEstimate(
         rec.id,
-        estimateProcessingSeconds(p.name, rec.durationSec, repo.processingStats(p.name), rec.sizeBytes, rec.quality),
+        estimateProcessingSeconds(
+          p.name,
+          rec.durationSec,
+          repo.processingStats(p.name),
+          rec.sizeBytes,
+          rec.quality,
+        ),
       );
       log.info('Processing transcript', {
         id: rec.id,
@@ -254,7 +265,10 @@ export function createWorker(deps: WorkerDeps): JobWorker {
             p,
             rec,
             state.providerJobId,
-            jobError('TRANSCRIPTION_FAILED', 'The uploaded audio is no longer on the server. Upload the file again.'),
+            jobError(
+              'TRANSCRIPTION_FAILED',
+              'The uploaded audio is no longer on the server. Upload the file again.',
+            ),
           );
           return;
         }

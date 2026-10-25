@@ -18,15 +18,26 @@ export interface TranscriptTableProps {
 const UNKNOWN_SPEAKER: Speaker = { id: '', name: 'Unknown speaker', colorIndex: 9 };
 
 function prefersReducedMotion(): boolean {
-  return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return (
+    typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  );
 }
 
 function isEditingInside(container: HTMLElement): boolean {
   const active = document.activeElement;
-  return !!active && container.contains(active) && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT');
+  return (
+    !!active && container.contains(active) && (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT')
+  );
 }
 
-export function TranscriptTable({ rows, speakers, time, trackPlayback, followAlong, actions }: TranscriptTableProps) {
+export function TranscriptTable({
+  rows,
+  speakers,
+  time,
+  trackPlayback,
+  followAlong,
+  actions,
+}: TranscriptTableProps) {
   const tableRef = useRef<HTMLTableElement>(null);
   const starts = useMemo(() => rows.map((r) => r.startMs), [rows]);
   const speakerById = useMemo(() => new Map(speakers.map((s) => [s.id, s])), [speakers]);
@@ -64,7 +75,8 @@ export function TranscriptTable({ rows, speakers, time, trackPlayback, followAlo
     const rowEl = Array.from(table.tBodies[0]?.rows ?? []).find((tr) => tr.dataset.rowId === pending.rowId);
     if (!rowEl) return;
     const same = rowEl.querySelector<HTMLButtonElement>(`[data-action="merge-${pending.direction}"]`);
-    const target = same && !same.disabled ? same : rowEl.querySelector<HTMLButtonElement>('[data-action="edit"]');
+    const target =
+      same && !same.disabled ? same : rowEl.querySelector<HTMLButtonElement>('[data-action="edit"]');
     target?.focus();
   }, [rows]);
 
