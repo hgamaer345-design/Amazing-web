@@ -213,12 +213,26 @@ code {
   margin: 0 auto;
 }
 
+.nav-label-short {
+  display: none;
+}
+.brand span {
+  white-space: nowrap;
+}
 @media (max-width: 640px) {
   .app-main {
     padding: var(--space-4) var(--space-3) var(--space-5);
   }
   .brand span {
     font-size: 0.98rem;
+  }
+}
+@media (max-width: 420px) {
+  .nav-label-long {
+    display: none;
+  }
+  .nav-label-short {
+    display: inline;
   }
 }
 

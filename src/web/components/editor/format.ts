@@ -16,18 +16,3 @@ export function formatDateTime(iso: string, locale?: string): string {
   if (Number.isNaN(date.getTime())) return '—';
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
-
-/**
- * Starts a download of a same-origin attachment URL without navigating (so no beforeunload prompt
- * and no page change; the server's Content-Disposition names the file).
- */
-export function triggerDownload(url: string): void {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = '';
-  a.rel = 'noopener';
-  a.hidden = true;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}

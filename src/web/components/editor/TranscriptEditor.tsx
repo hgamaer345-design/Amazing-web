@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
 import { makeId } from '../../../shared/speakers';
 import { formatDuration } from '../../../shared/time';
 import type { ExportFormat, TranscriptDetail, TranscriptDocument, TranscriptSummary } from '../../../shared/types';
-import { audioUrl, exportUrl, saveDocument, updateTranscript } from '../../api';
+import { QUALITY_MODE_DEFINITIONS } from '../../../shared/quality';
+import { audioUrl, downloadExport, saveDocument, updateTranscript } from '../../api';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { useAutosave } from '../../hooks/useAutosave';
 import {
@@ -22,10 +23,11 @@ import { AudioPlayer, type AudioSource } from './AudioPlayer';
 import { DeleteAudioButton, DeleteTranscriptButton } from './DeleteActions';
 import { EditableTitle } from './EditableTitle';
 import { ExportMenu } from './ExportMenu';
-import { formatDateTime, languageName, triggerDownload } from './format';
+import { formatDateTime, languageName } from './format';
 import { RedoIcon, UndoIcon } from './icons';
 import { SaveStatus } from './SaveStatus';
 import { SpeakerLegend } from './SpeakerLegend';
+import { SpeakerTimeline } from './SpeakerTimeline';
 import { TranscriptTable } from './TranscriptTable';
 import type { RowActions } from './TranscriptRowView';
 
@@ -178,8 +180,13 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
     setExportError(null);
     const result = await autosave.flush();
     setExporting(false);
-    if (result === 'saved') triggerDownload(exportUrl(id, format));
-    else if (result === 'conflict') {
+    if (result === 'saved') {
+      try {
+        await downloadExport(id, format);
+      } catch {
+        setExportError('The export couldn’t be created. Please try again.');
+      }
+    } else if (result === 'conflict') {
       setExportError('The export was cancelled because this transcript was changed somewhere else. Check the latest version, then export again.');
     } else {
       setExportError('Your latest changes couldn’t be saved, so the export was cancelled. Retry saving, then export again.');
@@ -207,6 +214,12 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
             <div>
               <dt>Speakers</dt>
               <dd>{rowCounts.size}</dd>
+            </div>
+            <div>
+              <dt>Quality</dt>
+              <dd className="tx-quality-badge" data-quality={transcript.quality ?? 'high'}>
+                {QUALITY_MODE_DEFINITIONS[transcript.quality ?? 'high'].label}
+              </dd>
             </div>
             <div>
               <dt>Created</dt>
@@ -281,6 +294,13 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
           followAlong={followAlong}
           onFollowAlongChange={setFollowAlong}
           onAttachFile={attachFile}
+        />
+        <SpeakerTimeline
+          rows={doc.rows}
+          speakers={doc.speakers}
+          durationMs={player.durationMs ?? (transcript.durationSec != null ? transcript.durationSec * 1000 : null)}
+          time={player.time}
+          onSeek={hasAudio ? (ms) => seek(ms, { play: true }) : undefined}
         />
       </div>
 

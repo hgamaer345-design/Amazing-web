@@ -60,8 +60,11 @@ export default function App() {
             <span>Speaker Transcriber</span>
           </Link>
           <nav className="app-nav">
-            <Link to="/" className="btn btn-primary btn-sm">
-              New transcription
+            <Link to="/" className="btn btn-primary btn-sm" aria-label="New transcription">
+              <span className="nav-label-long">New transcription</span>
+              <span className="nav-label-short" aria-hidden="true">
+                + New
+              </span>
             </Link>
           </nav>
         </header>
