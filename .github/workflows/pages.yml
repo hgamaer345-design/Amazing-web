@@ -1,7 +1,9 @@
 # Publishes the static demo build (transcription simulated in the browser; no server or API
-# key) to the gh-pages branch, which GitHub Pages serves at https://<owner>.github.io/<repo>/.
-# One-time setup if the site doesn't appear: Settings → Pages → "Deploy from a branch" →
-# branch "gh-pages", folder "/ (root)".
+# key) to GitHub Pages at https://<owner>.github.io/<repo>/.
+#
+# Works with either Pages source (Settings → Pages → Build and deployment → Source):
+#   - "GitHub Actions": served by the deploy job below.
+#   - "Deploy from a branch" (gh-pages, / (root)): served from the gh-pages branch this workflow updates.
 name: Deploy demo to GitHub Pages
 
 on:
@@ -11,13 +13,15 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: github-pages
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     # Only deploy from the repository's default branch.
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
@@ -34,6 +38,13 @@ jobs:
       - name: Build the demo
         run: npm run build:pages
 
+      - name: Show the repository's Pages configuration
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -sS -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages" || true
+
       - name: Publish to the gh-pages branch
         working-directory: dist/pages
         env:
@@ -45,3 +56,19 @@ jobs:
               -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
               commit -q -m "Deploy demo from ${GITHUB_SHA}"
           git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/pages
+
+  deploy:
+    needs: build
+    # Fails harmlessly when Pages is set to "Deploy from a branch" (the gh-pages branch serves the site then).
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
