@@ -1,4 +1,4 @@
-import { formatSrtTimestamp } from '../../shared/time';
+import { formatSrtTimestamp } from '../time';
 import type { ExportRow } from './common';
 
 /** Subtitle layout targets (common broadcast guidelines). */

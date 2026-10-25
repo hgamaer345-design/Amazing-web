@@ -1,5 +1,5 @@
-import { formatHms } from '../../shared/time';
-import type { TranscriptDocument } from '../../shared/types';
+import { formatHms } from '../time';
+import type { TranscriptDocument } from '../types';
 
 export const UNKNOWN_SPEAKER = 'Unknown speaker';
 

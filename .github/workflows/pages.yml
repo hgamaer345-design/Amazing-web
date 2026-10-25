@@ -1,0 +1,47 @@
+# Publishes the static demo build (transcription simulated in the browser; no server or API
+# key) to the gh-pages branch, which GitHub Pages serves at https://<owner>.github.io/<repo>/.
+# One-time setup if the site doesn't appear: Settings → Pages → "Deploy from a branch" →
+# branch "gh-pages", folder "/ (root)".
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [main, master, 'claude/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # Only deploy from the repository's default branch.
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the demo
+        run: npm run build:pages
+
+      - name: Publish to the gh-pages branch
+        working-directory: dist/pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "Deploy demo from ${GITHUB_SHA}"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages

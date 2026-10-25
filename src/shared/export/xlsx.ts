@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs';
-import { speakerColor } from '../../shared/speakers';
-import { formatDuration } from '../../shared/time';
-import type { ExportInput } from './index';
+import { speakerColor } from '../speakers';
+import { formatDuration } from '../time';
+import type { ExportInput } from './render';
 import { formatCreated, languageLabel, speakersInOrder, type ExportRow } from './common';
 
 /** Excel refuses to open cells longer than this. */
@@ -26,7 +26,7 @@ function splitForCells(text: string): string[] {
   return pieces;
 }
 
-export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Buffer> {
+export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Speaker Transcriber';
   const created = new Date(input.createdAt);
@@ -85,6 +85,7 @@ export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Buf
     row.getCell('value').alignment = { wrapText: true, vertical: 'top' };
   }
 
-  const out = await wb.xlsx.writeBuffer();
-  return Buffer.from(out as ArrayBuffer);
+  // A Node Buffer on the server, an ArrayBuffer in the browser; both become a Uint8Array.
+  const out = (await wb.xlsx.writeBuffer()) as ArrayBuffer | Uint8Array;
+  return out instanceof Uint8Array ? out : new Uint8Array(out);
 }

@@ -138,6 +138,8 @@ export interface AppConfigResponse {
   /** Whether the provider can use "number of speakers" as a hint. */
   supportsSpeakerCount: boolean;
   maxSpeakers: number;
+  /** Static demo build (no server): transcription is simulated in the browser. */
+  demoMode?: boolean;
 }
 
 /**

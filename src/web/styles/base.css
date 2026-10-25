@@ -233,6 +233,10 @@ code {
   background: var(--warning-soft);
   color: var(--warning);
 }
+.banner-info {
+  background: var(--primary-soft);
+  color: var(--text);
+}
 .banner-error {
   background: var(--danger-soft);
   color: var(--danger);

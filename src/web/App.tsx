@@ -6,6 +6,15 @@ import TranscriptPage from './pages/TranscriptPage';
 function ConfigBanner() {
   const { config, loaded, error } = useAppConfig();
   if (!loaded) return null;
+  if (config.demoMode) {
+    return (
+      <div className="banner banner-info" role="note">
+        <strong>Demo version.</strong> Transcription is simulated in your browser and your audio never leaves
+        your device. To transcribe real recordings, run the full app with a speech-to-text API key —{' '}
+        <a href="https://github.com/hgamaer345-design/Amazing-web#readme">see the README</a>.
+      </div>
+    );
+  }
   if (error) {
     return (
       <div className="banner banner-error" role="alert">
@@ -47,7 +56,7 @@ export default function App() {
         </a>
         <header className="app-header">
           <Link to="/" className="brand" aria-label="Speaker Transcriber home">
-            <img src="/favicon.svg" alt="" width={28} height={28} />
+            <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" width={28} height={28} />
             <span>Speaker Transcriber</span>
           </Link>
           <nav className="app-nav">

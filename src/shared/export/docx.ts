@@ -12,9 +12,9 @@ import {
   VerticalAlign,
   WidthType,
 } from 'docx';
-import { speakerColor } from '../../shared/speakers';
-import { formatDuration } from '../../shared/time';
-import type { ExportInput } from './index';
+import { speakerColor } from '../speakers';
+import { formatDuration } from '../time';
+import type { ExportInput } from './render';
 import { formatCreated, languageLabel, speakersInOrder, type ExportRow } from './common';
 
 // A4 with 1" margins leaves 9026 twips of text width.
@@ -46,7 +46,7 @@ function cell(children: Paragraph[], width: number, shaded = false): TableCell {
   });
 }
 
-export async function toDocx(rows: ExportRow[], input: ExportInput): Promise<Buffer> {
+export async function toDocx(rows: ExportRow[], input: ExportInput): Promise<Uint8Array> {
   const speakers = speakersInOrder(rows);
   const meta = [
     `File: ${input.originalFilename}`,
@@ -125,5 +125,5 @@ export async function toDocx(rows: ExportRow[], input: ExportInput): Promise<Buf
       },
     ],
   });
-  return Packer.toBuffer(doc);
+  return Packer.pack(doc, 'uint8array');
 }

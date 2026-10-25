@@ -1,10 +1,11 @@
 // Typed client for the server API. All network access from the UI goes through here.
+// In the static demo build (VITE_DEMO_MODE=true, e.g. GitHub Pages) every call is served
+// by an in-browser simulation instead (see ./demo/demoApi.ts).
 import { ERROR_MESSAGES } from '../shared/errors';
 import type {
   ApiErrorBody,
   AppConfigResponse,
   CreateTranscriptResponse,
-  ErrorCode,
   ExportFormat,
   GetTranscriptResponse,
   ListTranscriptsResponse,
@@ -15,23 +16,13 @@ import type {
   TranscriptSummary,
   UpdateTranscriptResponse,
 } from '../shared/types';
+import { ApiError } from './apiError';
+import * as demo from './demo/demoApi';
 
-export class ApiError extends Error {
-  readonly code: ErrorCode;
-  readonly status: number;
-  readonly detail: string | undefined;
-  /** Parsed response body, e.g. the latest document for VERSION_CONFLICT. */
-  readonly body: unknown;
+export { ApiError };
 
-  constructor(code: ErrorCode, message: string, status: number, detail?: string, body?: unknown) {
-    super(message);
-    this.name = 'ApiError';
-    this.code = code;
-    this.status = status;
-    this.detail = detail;
-    this.body = body;
-  }
-}
+/** True in the static demo build, which has no server. */
+export const isDemoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 
 function isErrorBody(x: unknown): x is ApiErrorBody {
   return (
@@ -84,14 +75,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function getConfig(): Promise<AppConfigResponse> {
+  if (isDemoMode) return demo.getConfig();
   return request<AppConfigResponse>('/api/config');
 }
 
 export async function listTranscripts(): Promise<TranscriptSummary[]> {
+  if (isDemoMode) return demo.listTranscripts();
   return (await request<ListTranscriptsResponse>('/api/transcripts')).transcripts;
 }
 
 export async function getTranscript(id: string): Promise<TranscriptDetail> {
+  if (isDemoMode) return demo.getTranscript(id);
   return (await request<GetTranscriptResponse>(`/api/transcripts/${encodeURIComponent(id)}`)).transcript;
 }
 
@@ -100,6 +94,7 @@ export async function getTranscript(id: string): Promise<TranscriptDetail> {
  * code "VERSION_CONFLICT" whose `body.document` is the server's latest document.
  */
 export async function saveDocument(id: string, req: SaveDocumentRequest): Promise<TranscriptDocument> {
+  if (isDemoMode) return demo.saveDocument(id, req);
   return (
     await request<SaveDocumentResponse>(`/api/transcripts/${encodeURIComponent(id)}/document`, {
       method: 'PUT',
@@ -117,6 +112,7 @@ export function conflictDocument(err: unknown): TranscriptDocument | null {
 }
 
 export async function updateTranscript(id: string, changes: { title?: string }): Promise<TranscriptSummary> {
+  if (isDemoMode) return demo.updateTranscript(id, changes);
   return (
     await request<UpdateTranscriptResponse>(`/api/transcripts/${encodeURIComponent(id)}`, {
       method: 'PATCH',
@@ -126,10 +122,12 @@ export async function updateTranscript(id: string, changes: { title?: string }):
 }
 
 export async function deleteTranscript(id: string): Promise<void> {
+  if (isDemoMode) return demo.deleteTranscript(id);
   await request<void>(`/api/transcripts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function deleteAudio(id: string): Promise<TranscriptSummary> {
+  if (isDemoMode) return demo.deleteAudio(id);
   return (
     await request<{ transcript: TranscriptSummary }>(`/api/transcripts/${encodeURIComponent(id)}/audio`, {
       method: 'DELETE',
@@ -138,6 +136,7 @@ export async function deleteAudio(id: string): Promise<TranscriptSummary> {
 }
 
 export async function retryTranscript(id: string): Promise<TranscriptSummary> {
+  if (isDemoMode) return demo.retryTranscript(id);
   return (
     await request<{ transcript: TranscriptSummary }>(`/api/transcripts/${encodeURIComponent(id)}/retry`, {
       method: 'POST',
@@ -146,11 +145,24 @@ export async function retryTranscript(id: string): Promise<TranscriptSummary> {
 }
 
 export function audioUrl(id: string): string {
+  if (isDemoMode) return demo.audioUrl(id);
   return `/api/transcripts/${encodeURIComponent(id)}/audio`;
 }
 
 export function exportUrl(id: string, format: ExportFormat): string {
   return `/api/transcripts/${encodeURIComponent(id)}/export?format=${format}`;
+}
+
+/** Starts a file download of the transcript in `format`. */
+export async function downloadExport(id: string, format: ExportFormat): Promise<void> {
+  if (isDemoMode) return demo.downloadExport(id, format);
+  const a = document.createElement('a');
+  a.href = exportUrl(id, format);
+  // The server sends Content-Disposition with the real file name.
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 export interface UploadOptions {
@@ -179,6 +191,7 @@ export function uploadTranscript(
   options: UploadOptions,
   onProgress: (p: UploadProgress) => void,
 ): UploadHandle {
+  if (isDemoMode) return demo.uploadTranscript(file, options, onProgress);
   const xhr = new XMLHttpRequest();
   const promise = new Promise<TranscriptSummary>((resolve, reject) => {
     const form = new FormData();

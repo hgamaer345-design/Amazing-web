@@ -2,12 +2,12 @@ import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { speakerColor } from '../../shared/speakers';
 import type { TranscriptDocument } from '../../shared/types';
-import { buildExportRows, languageLabel, sanitizeText } from './common';
-import { toCsv } from './csv';
+import { buildExportRows, languageLabel, sanitizeText } from '../../shared/export/common';
+import { toCsv } from '../../shared/export/csv';
 import { exportTranscript, type ExportInput } from './index';
-import { SRT_LIMITS, toSrt, wrapCueText } from './srt';
-import { toTxt } from './txt';
-import { XLSX_MAX_CELL_CHARS } from './xlsx';
+import { SRT_LIMITS, toSrt, wrapCueText } from '../../shared/export/srt';
+import { toTxt } from '../../shared/export/txt';
+import { XLSX_MAX_CELL_CHARS } from '../../shared/export/xlsx';
 
 const doc: TranscriptDocument = {
   version: 3,

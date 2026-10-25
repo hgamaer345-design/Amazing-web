@@ -4,9 +4,12 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './styles/base.css';
 
+// "/" normally; "/<repo>/" for the GitHub Pages demo build.
+const basename = import.meta.env.BASE_URL.replace(/\/$/, '') || undefined;
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <App />
     </BrowserRouter>
   </StrictMode>,
