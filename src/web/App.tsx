@@ -9,8 +9,9 @@ function ConfigBanner() {
   if (config.demoMode) {
     return (
       <div className="banner banner-info" role="note">
-        <strong>Demo version.</strong> Transcription is simulated in your browser and your audio never leaves
-        your device. To transcribe real recordings, run the full app with a speech-to-text API key —{' '}
+        <strong>Runs in your browser.</strong> Speech recognition (Whisper) and speaker separation run on this
+        device, so your audio is never uploaded. The speech models download once on first use (40–250 MB,
+        depending on the quality). For long recordings, the full app with a cloud speech API is faster —{' '}
         <a href="https://github.com/hgamaer345-design/Amazing-web#readme">see the README</a>.
       </div>
     );

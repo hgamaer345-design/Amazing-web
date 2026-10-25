@@ -3,9 +3,11 @@
 Upload a recording, get a transcript **separated by speaker**, fix it up in an editable table while
 listening to the audio, and export it as **CSV, Excel, plain text, subtitles or Word**.
 
-**Live demo:** <https://hgamaer345-design.github.io/Amazing-web/> — runs entirely in your browser
-with _simulated_ transcription (see [Demo on GitHub Pages](#demo-on-github-pages)). For real
-transcripts, run the full app with a speech-to-text API key ([Quick start](#quick-start)).
+**Live demo:** <https://hgamaer345-design.github.io/Amazing-web/> — real transcription that runs
+entirely in your browser: Whisper for speech recognition and pyannote + WeSpeaker models for speaker
+separation, so your audio never leaves your device (see [Demo on GitHub Pages](#demo-on-github-pages)).
+For long recordings and the fastest, most accurate results, run the full app with a cloud
+speech-to-text API key ([Quick start](#quick-start)).
 
 ## Features
 
@@ -81,7 +83,8 @@ The Ultra High limit is per visitor (an anonymous key derived from the client's 
 basic-auth user) and resets at midnight UTC. A job counts while it is processing and once it has
 finished; a failed job doesn't use up a free use, and deleting a finished transcript doesn't give one
 back. Change the limit with `ULTRA_DAILY_LIMIT` (`unlimited` removes it). In the GitHub Pages demo the
-limit is tracked in your browser.
+limit is tracked in your browser, and the modes pick the in-browser models instead (see
+[Demo on GitHub Pages](#demo-on-github-pages)).
 
 ## Choosing a provider
 
@@ -152,20 +155,52 @@ To run the worker as a separate process, set `RUN_WORKER=false` for the web serv
 
 ## Demo on GitHub Pages
 
-GitHub Pages can only host static files, so it can't run the server this app needs (it keeps the
-API key secret and processes uploads). The repository therefore also builds a **static demo**: the
-same interface, but every API call is answered inside the browser — transcription is simulated with
-a generated conversation, history is stored in your browser (IndexedDB) and exports are generated
-client-side. Nothing is uploaded anywhere.
+GitHub Pages can only host static files, so it can't run the server (which keeps the API key secret
+and processes uploads). The repository therefore also builds a **static demo** with the same interface
+in which everything happens in the browser:
+
+- **Transcription runs on your device.** A Web Worker first finds who spoke when (speaker
+  diarization with the [pyannote segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0)
+  and [WeSpeaker](https://github.com/wenet-e2e/wespeaker) ResNet34 models, a port of
+  [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)'s pipeline), then transcribes each speaker
+  turn with [Whisper](https://github.com/openai/whisper) via
+  [Transformers.js](https://github.com/huggingface/transformers.js), detecting the language
+  automatically. Nothing is uploaded.
+- **Quality modes pick the model:**
+
+  | Mode           | Speech model  | Download (once) | Speaker analysis                |
+  | -------------- | ------------- | --------------- | ------------------------------- |
+  | **Standard**   | Whisper Tiny  | ~40 MB          | 2 s steps                       |
+  | **High**       | Whisper Base  | ~80 MB          | 1 s steps (default)             |
+  | **Ultra High** | Whisper Small | ~250 MB         | 1 s steps, longer voice samples |
+
+  The speaker models (~32 MB) are served by the site itself; Whisper is downloaded from the
+  Hugging Face hub. The browser caches all of them, so later files start straight away.
+
+- **Speed** depends on the device: on a recent laptop a minute of audio takes very roughly one to
+  three minutes in High. A desktop browser (Chrome, Edge, Firefox or Safari) is recommended for long
+  files; phones work but are slower. A small service worker
+  ([coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)) enables multi-threading,
+  which is why the page reloads once on the first visit.
+- History is stored in your browser (IndexedDB) and exports are generated in the browser.
+
+Building and publishing:
 
 - Build it locally: `npm run build:pages` (output in `dist/pages`; set `PAGES_BASE=/your-repo/`
-  if needed).
+  if needed). This downloads the speaker models into `vendor/speech-models/` (checksum-verified)
+  the first time.
 - Deployment is automatic: [`.github/workflows/pages.yml`](.github/workflows/pages.yml) builds the
   demo on every push to the default branch and publishes it.
 - **One-time setup:** in the repository go to **Settings → Pages → Build and deployment**, set
   **Source** to **Deploy from a branch**, branch **`gh-pages`**, folder **`/ (root)`**, and save.
   (Choosing **GitHub Actions** as the source also works.) The site is then served at
   `https://<owner>.github.io/<repo>/`.
+
+**Model credits.** pyannote segmentation-3.0 by Hervé Bredin and contributors (MIT License);
+WeSpeaker ResNet34-LM speaker embeddings by the WeSpeaker project, trained on VoxCeleb, used under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); ONNX exports by sherpa-onnx (Apache-2.0);
+Whisper by OpenAI (MIT), ONNX conversions by Xenova on the Hugging Face hub. The site ships these
+notices in `models/ATTRIBUTION.txt`.
 
 ## Deployment (full app)
 
@@ -240,3 +275,8 @@ More detail on the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   spoken audio to detect the language.
 - **The GitHub Pages site shows 404** — Pages isn't enabled yet; see the one-time setup in
   [Demo on GitHub Pages](#demo-on-github-pages).
+- **The demo says the speech models couldn't be downloaded** — the browser couldn't reach
+  `huggingface.co` (Whisper) or the site's `models/` folder; check the connection, ad blockers or a
+  network filter, then press Retry.
+- **The demo is slow or the tab runs out of memory** — choose Standard, close other tabs, or use a
+  desktop browser; for recordings longer than about an hour, use the full app with an API key.

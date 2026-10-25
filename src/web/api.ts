@@ -1,6 +1,6 @@
 // Typed client for the server API. All network access from the UI goes through here.
 // In the static demo build (VITE_DEMO_MODE=true, e.g. GitHub Pages) every call is served
-// by an in-browser simulation instead (see ./demo/demoApi.ts).
+// by the in-browser backend instead, which transcribes on the device (see ./demo/demoApi.ts).
 import { ERROR_MESSAGES } from '../shared/errors';
 import type {
   ApiErrorBody,

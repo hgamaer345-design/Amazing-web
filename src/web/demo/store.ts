@@ -1,6 +1,12 @@
 // Browser persistence for the static demo: IndexedDB, falling back to memory where it is
 // unavailable (some private-browsing modes).
-import type { QualityMode, Speaker, TranscriptError, TranscriptRow } from '../../shared/types';
+import type {
+  QualityMode,
+  Speaker,
+  TranscriptError,
+  TranscriptRow,
+  TranscriptStatus,
+} from '../../shared/types';
 
 export interface DemoRecord {
   id: string;
@@ -18,14 +24,9 @@ export interface DemoRecord {
   hasAudio: boolean;
   createdAt: string;
   updatedAt: string;
-  /** Epoch ms the simulated processing timeline starts from (reset on retry). */
-  timelineStartMs: number;
-  /** Simulated transcription time for this file. */
-  transcribeMs: number;
-  /** Simulated outcome, from the file name (same triggers as the server's mock provider). */
-  outcome: 'ok' | 'nospeech' | 'fail';
-  /** Set once the simulated job has reached a terminal state. */
-  final: 'done' | 'error' | null;
+  status: TranscriptStatus;
+  /** When processing started (ISO), null while queued. */
+  startedAt: string | null;
   completedAt: string | null;
   languageCode: string | null;
   error: TranscriptError | null;

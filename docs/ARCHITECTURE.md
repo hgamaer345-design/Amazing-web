@@ -304,6 +304,42 @@ live region for status text). Props in the stub.
 - Responsive: under ~720 px the table becomes stacked cards (same DOM, CSS `display: block`), the
   player stays usable (no horizontal scrolling), tap targets ≥ 40 px.
 
+## In-browser transcription (GitHub Pages demo)
+
+The static demo (`VITE_DEMO_MODE`, built by `scripts/build-pages.mjs`) replaces the API with
+`src/web/demo/demoApi.ts`: records live in IndexedDB (`store.ts`), jobs run one at a time in upload
+order, and a page reload re-queues an unfinished job whose audio is stored. Transcription happens on
+the device in `src/web/demo/speech/`:
+
+```
+engine.ts          page side: decode the file to 16 kHz mono (OfflineAudioContext), talk to the worker,
+                   cancel = terminate the worker
+speech.worker.ts   load models → diarize → plan turns → detect language → Whisper per turn
+diarize.ts         port of sherpa-onnx's speaker-diarization-onnx.py: pyannote segmentation-3.0 on 10 s
+                   windows (powerset → 3 local speakers), WeSpeaker embedding per local speaker,
+                   complete-linkage cosine clustering (cluster.ts), overlap-add, min on/off durations
+fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false, no CMN) for WeSpeaker
+turns.ts           speaker turns → padded, merged clips for Whisper
+models.ts          ONNX Runtime set-up (self-hosted wasm; threads when cross-origin isolated),
+                   model download + Cache API, Whisper via Transformers.js, language detection
+```
+
+- Speaker models are fetched at build time by `scripts/fetch-speech-models.mjs` from sherpa-onnx's
+  GitHub releases (SHA-256 pinned) into `vendor/speech-models/` and served from `<base>/models/`.
+  Whisper (`Xenova/whisper-{tiny,base,small}`, q8) comes from the Hugging Face hub.
+- Transformers.js assumes English unless a language is given, so `detectLanguage` runs one decoder
+  step after `<|startoftranscript|>` on up to 30 s of speech and takes the best language token.
+- Quality modes map to Whisper size and diarization settings (`DIARIZATION_SETTINGS`); long files
+  use a coarser window hop (`max(mode, ceil(minutes / 20))` seconds) to bound the work.
+- GitHub Pages can't send COOP/COEP headers; `coi-serviceworker` adds them so ONNX Runtime can use
+  threads (`SharedArrayBuffer`). Without it everything still works single-threaded.
+- Test fixtures were generated with Python reference implementations (`kaldi-native-fbank` for
+  `fbank.json`: 0.3 s of speech with `dither=0, snip_edges=False, window_type="povey",
+  num_bins=80, low_freq=20, high_freq=-400`, input scaled by 32768; `sherpa_onnx.FastClustering` on
+  random clustered embeddings for `clusters.json`). The diarization port was checked against
+  sherpa-onnx's `OfflineSpeakerDiarization` on a synthesized three-speaker conversation (identical
+  turns).
+
 ## Conventions
 
 - Keep modules focused; match the style of the existing files (2-space indent, single quotes,

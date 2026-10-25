@@ -9,6 +9,8 @@ export default defineConfig({
   // The GitHub Pages demo is served from /<repo>/ (see scripts/build-pages.mjs).
   base: process.env.VITE_BASE ?? '/',
   plugins: [react()],
+  // The speech worker (static demo) is started as a module worker.
+  worker: { format: 'es' },
   build: {
     outDir: process.env.VITE_OUT_DIR ?? '../../dist/public',
     emptyOutDir: true,

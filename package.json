@@ -25,12 +25,14 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@huggingface/transformers": "4.3.1",
     "better-sqlite3": "^13.0.3",
     "busboy": "^1.6.0",
     "docx": "^9.14.0",
     "exceljs": "^4.4.0",
     "express": "^5.3.0",
     "music-metadata": "^12.3.0",
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.4",
@@ -48,6 +50,7 @@
     "@types/react-dom": "^19.3.0",
     "@types/supertest": "^7.2.1",
     "@vitejs/plugin-react": "^6.1.2",
+    "coi-serviceworker": "0.1.7",
     "concurrently": "^10.0.6",
     "esbuild": "^0.28.2",
     "jsdom": "^29.1.1",

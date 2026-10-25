@@ -1,5 +1,6 @@
-# Publishes the static demo build (transcription simulated in the browser; no server or API
-# key) to GitHub Pages at https://<owner>.github.io/<repo>/.
+# Publishes the static demo build (transcription runs in the visitor's browser; no server or API
+# key) to GitHub Pages at https://<owner>.github.io/<repo>/. The build downloads the speaker
+# models from sherpa-onnx's GitHub releases (checksum-verified, see scripts/fetch-speech-models.mjs).
 #
 # Works with either Pages source (Settings → Pages → Build and deployment → Source):
 #   - "GitHub Actions": served by the deploy job below.

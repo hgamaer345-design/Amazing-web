@@ -45,6 +45,11 @@ export function stageDetail({ stage, upload, progress }: ProcessingStepsProps): 
         ? `Waiting in queue (position ${progress.queuePosition})…`
         : 'Waiting for a free transcription slot…';
     case 'transcribing':
+      if (progress?.message) {
+        // The in-browser engine reports what it is doing (downloading models, finding speakers…).
+        const eta = progress.etaSeconds ? ` · ${formatEta(progress.etaSeconds)} remaining` : '';
+        return `${progress.message}${eta}`;
+      }
       if (progress?.etaSeconds === 0) return 'Transcribing — taking longer than expected…';
       return progress?.etaSeconds != null
         ? `Transcribing — ${formatEta(progress.etaSeconds)} remaining`
@@ -62,6 +67,7 @@ export function stageDetail({ stage, upload, progress }: ProcessingStepsProps): 
 function fraction({ stage, upload, progress }: ProcessingStepsProps): number | null {
   if (stage === 'uploading') return upload && upload.total > 0 ? upload.loaded / upload.total : null;
   if (stage === 'done') return 1;
+  if (stage === 'transcribing' && progress?.fraction != null) return Math.min(0.99, progress.fraction);
   if (stage === 'transcribing' && progress?.estimatedTotalSeconds) {
     return Math.min(0.95, progress.elapsedSeconds / progress.estimatedTotalSeconds);
   }

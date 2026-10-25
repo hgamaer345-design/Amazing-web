@@ -98,6 +98,10 @@ export interface TranscriptProgress {
   estimatedTotalSeconds: number | null;
   /** 1-based position in the queue while status is "queued"; null otherwise. */
   queuePosition: number | null;
+  /** Finer-grained status text, e.g. "Downloading speech model (12 of 77 MB)…" (in-browser engine). */
+  message?: string | null;
+  /** Measured progress 0..1, when known (in-browser engine). */
+  fraction?: number | null;
 }
 
 /** Shape used in the history list. */
@@ -147,7 +151,7 @@ export interface AppConfigResponse {
   /** Whether the provider can use "number of speakers" as a hint. */
   supportsSpeakerCount: boolean;
   maxSpeakers: number;
-  /** Static demo build (no server): transcription is simulated in the browser. */
+  /** Static demo build (no server): transcription runs in the browser (see src/web/demo). */
   demoMode?: boolean;
   /** Quality modes in display order, with their free daily limits. */
   qualityModes: QualityModeInfo[];
