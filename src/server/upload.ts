@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import { pipeline } from 'node:stream/promises';
-import { parseFile } from 'music-metadata';
+import { parseFile, type IAudioMetadata } from 'music-metadata';
 import { formatBytes } from '../shared/time';
 import { ACCEPTED_EXTENSIONS, type AcceptedExtension } from '../shared/types';
 import { AppError } from './errors';
@@ -68,6 +68,11 @@ interface PartFile {
   bytes: number;
   /** Settles once the ".part" file is completely written (or the write failed). */
   written: Promise<void>;
+  /**
+   * Resolves once the ".part" file's descriptor is closed. A pipeline can fail before the file has
+   * even been opened; deleting it before this point would race with its creation.
+   */
+  closed: Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +225,9 @@ function receiveMultipart(
         // Browsers send non-ASCII file names as raw UTF-8.
         defParamCharset: 'utf8',
         limits: {
-          fileSize: limits.maxUploadBytes,
+          // busboy reports "limit" as soon as this many bytes arrived, so allow one more: a file of
+          // exactly maxUploadBytes is fine, and "limit" means it is really over.
+          fileSize: limits.maxUploadBytes + 1,
           files: 1,
           fields: 10,
           fieldSize: 1024,
@@ -252,7 +259,7 @@ function receiveMultipart(
       abortWrite.abort();
       const part = file;
       const removed = part
-        ? part.written.catch(() => undefined).then(() => storage.delete(part.partName))
+        ? part.written.catch(() => undefined).then(() => part.closed).then(() => storage.delete(part.partName))
         : Promise.resolve();
       removed
         .catch((cleanupErr: unknown) => log.warn('Could not remove partial upload', { file: part?.partName, err: cleanupErr }))
@@ -306,6 +313,7 @@ function receiveMultipart(
         return;
       }
       const finalName = storage.newFileName(extension);
+      const out = fs.createWriteStream(storage.absPath(`${finalName}.part`), { flags: 'wx' });
       const part: PartFile = {
         partName: `${finalName}.part`,
         finalName,
@@ -314,14 +322,10 @@ function receiveMultipart(
         mimeType: storedMimeType(info.mimeType, extension),
         bytes: 0,
         written: Promise.resolve(),
+        closed: new Promise((resolve) => out.once('close', () => resolve())),
       };
       stream.once('limit', () => fail(fileTooLarge(limits.maxUploadBytes)));
-      part.written = pipeline(
-        stream,
-        sniffAndCount(part),
-        fs.createWriteStream(storage.absPath(part.partName), { flags: 'wx' }),
-        { signal: abortWrite.signal },
-      );
+      part.written = pipeline(stream, sniffAndCount(part), out, { signal: abortWrite.signal });
       part.written.catch(fail);
       file = part;
     });
@@ -337,7 +341,7 @@ function receiveMultipart(
         fail(new AppError('NO_FILE'));
         return;
       }
-      part.written.then(() => {
+      Promise.all([part.written, part.closed]).then(() => {
         if (settled) return;
         settled = true;
         detach();
@@ -349,17 +353,26 @@ function receiveMultipart(
   });
 }
 
-/** Duration in seconds, or null when the container doesn't record one (common for recorded WEBM). */
+/**
+ * Checks that the file parses as audio and returns its duration in seconds, or null when the
+ * container doesn't record one (common for WEBM from MediaRecorder).
+ */
 async function readDuration(filePath: string): Promise<number | null> {
-  let duration: number | undefined;
+  let format: IAudioMetadata['format'];
   try {
     // Parsed under its ".part" name, which has no known extension, so music-metadata picks the parser
     // from the content: a file whose extension doesn't match its container still parses correctly.
-    duration = (await parseFile(filePath, { duration: true })).format.duration;
+    format = (await parseFile(filePath, { duration: true })).format;
   } catch (err) {
     log.info('Uploaded file could not be parsed as audio', { error: err instanceof Error ? err.name : 'Error' });
     throw new AppError('UNREADABLE_AUDIO', undefined, { cause: err });
   }
+  // music-metadata is lenient: a valid container header followed by garbage "parses" without
+  // yielding a single audio property. Real audio always has at least one of these.
+  if (!format.codec && !format.sampleRate && !format.numberOfChannels) {
+    throw new AppError('UNREADABLE_AUDIO', undefined, { detail: 'No audio stream was found in the file.' });
+  }
+  const { duration } = format;
   return duration != null && Number.isFinite(duration) && duration > 0 ? duration : null;
 }
 
