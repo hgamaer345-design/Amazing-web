@@ -10,9 +10,9 @@ function ConfigBanner() {
     return (
       <div className="banner banner-info" role="note">
         <strong>Runs in your browser.</strong> Speech recognition (Whisper) and speaker separation run on this
-        device, so your audio is never uploaded. The speech models download once on first use (40–250 MB,
-        depending on the quality). For long recordings, the full app with a cloud speech API is faster —{' '}
-        <a href="https://github.com/hgamaer345-design/Amazing-web#readme">see the README</a>.
+        device, so your audio is never uploaded. The models download once on first use: about 90 MB for
+        Standard, up to 300 MB for Ultra High. For long recordings, the full app with a cloud speech API is
+        faster — <a href="https://github.com/hgamaer345-design/Amazing-web#readme">see the README</a>.
       </div>
     );
   }

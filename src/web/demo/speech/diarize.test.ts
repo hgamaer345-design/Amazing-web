@@ -169,6 +169,27 @@ describe('diarize', () => {
     expect(new Set(told.map((s) => s.speaker)).size).toBe(1);
   });
 
+  it('keeps the speakers of one window apart in a short recording, even with similar voices', async () => {
+    // 12 s = two windows at a 2 s hop; every "voice" embeds identically, so only the constraint
+    // that a window's local speakers are different people keeps them apart.
+    const models = { ...fakeModels(), embed: async () => Float32Array.of(1, 0, 0) };
+    const turns: [number, number, number][] = [
+      [0, 0.5, 3],
+      [1, 3.5, 6],
+      [0, 6.5, 9],
+      [1, 9.5, 11.5],
+    ];
+    const short = await diarize(scene(turns, 12), models, { windowShift: 2 * SR, embedStride: 5 * SR });
+    expect(short.map((s) => s.speaker)).toEqual([0, 1, 0, 1]);
+    // Without the constraint (as for long recordings) the identical voices merge.
+    const merged = await diarize(scene(turns, 12), models, {
+      windowShift: 2 * SR,
+      embedStride: 5 * SR,
+      cannotLinkMaxWindows: 0,
+    });
+    expect(new Set(merged.map((s) => s.speaker)).size).toBe(1);
+  });
+
   it('handles silence and audio shorter than one window', async () => {
     expect(await diarize(new Float32Array(3 * SR), fakeModels())).toEqual([]);
     const short = await diarize(scene([[0, 0.5, 3]], 4), fakeModels(), { embedStride: 5 * SR });

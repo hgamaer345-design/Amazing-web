@@ -175,8 +175,9 @@ in which everything happens in the browser:
   | **Ultra High** | Whisper Small | ~250 MB         |
 
   On top of that the first visit loads the speaker models (~32 MB, served by the site itself) and
-  the ONNX Runtime WebAssembly engine (~14 MB); Whisper comes from the Hugging Face hub. The browser
-  caches all of them, so later files start straight away.
+  the ONNX Runtime WebAssembly engine (~14 MB), so a first run downloads about 90 MB in Standard and
+  300 MB in Ultra High; Whisper comes from the Hugging Face hub. The browser caches all of them, so
+  later files start straight away.
 
 - **Long recordings work** — a 5-minute file is fine. Speaker separation looks at the audio in
   overlapping 10-second windows and takes voice fingerprints only every few seconds, so it stays
@@ -201,11 +202,12 @@ Building and publishing:
   (Choosing **GitHub Actions** as the source also works.) The site is then served at
   `https://<owner>.github.io/<repo>/`.
 
-**Model credits.** pyannote segmentation-3.0 by Hervé Bredin and contributors (MIT License);
-WeSpeaker ResNet34-LM speaker embeddings by the WeSpeaker project, trained on VoxCeleb, used under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); ONNX exports by sherpa-onnx (Apache-2.0);
-Whisper by OpenAI (MIT), ONNX conversions by Xenova on the Hugging Face hub. The site ships these
-notices in `models/ATTRIBUTION.txt`.
+**Model credits.** pyannote segmentation-3.0 (Copyright (c) 2022 CNRS, MIT License); WeSpeaker
+ResNet34-LM speaker embeddings by the WeSpeaker project, trained on VoxCeleb, used under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); ONNX exports of both by sherpa-onnx
+(Apache-2.0); Whisper by OpenAI (MIT), ONNX conversions by Xenova on the Hugging Face hub. The site
+ships the speaker models' notices in `models/ATTRIBUTION.txt` and the licences of the bundled
+libraries (Transformers.js, ONNX Runtime Web, coi-serviceworker) in `THIRD-PARTY-LICENSES.txt`.
 
 ## Deployment (full app)
 

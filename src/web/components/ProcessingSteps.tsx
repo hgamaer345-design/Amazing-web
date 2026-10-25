@@ -63,6 +63,25 @@ export function stageDetail({ stage, upload, progress }: ProcessingStepsProps): 
   }
 }
 
+/**
+ * What screen readers announce: the stage only, without counters or ETAs that change on every
+ * poll (a polite live region would otherwise speak every couple of seconds).
+ */
+export function stageAnnouncement({ stage, progress, error }: ProcessingStepsProps): string {
+  if (stage === 'error') return error?.message ?? 'Processing stopped.';
+  if (stage === 'done') return 'Done! Your transcript is ready.';
+  if (stage === 'uploading') return 'Uploading…';
+  if (stage === 'queued') return 'Waiting to start…';
+  if (stage === 'transcribing' && progress?.message) {
+    // e.g. "Downloading Whisper Tiny speech model (3.1 MB of 41.6 MB) — only needed once…"
+    return progress.message
+      .replace(/\s*\([^)]*\)/g, '')
+      .replace(/\s*—.*$/, '…')
+      .replace(/…+$/, '…');
+  }
+  return stage === 'separating' ? 'Separating speakers…' : 'Transcribing…';
+}
+
 /** 0..1 progress for the bar, or null for an indeterminate bar. */
 function fraction({ stage, upload, progress }: ProcessingStepsProps): number | null {
   if (stage === 'uploading') return upload && upload.total > 0 ? upload.loaded / upload.total : null;
@@ -153,8 +172,9 @@ export default function ProcessingSteps(props: ProcessingStepsProps) {
           <span style={value == null ? undefined : { width: `${Math.max(2, value * 100)}%` }} />
         </div>
       )}
-      <p className="steps-detail" role="status" aria-live="polite">
-        {failed && error ? error.message : stageDetail(props)}
+      <p className="steps-detail">{failed && error ? error.message : stageDetail(props)}</p>
+      <p className="visually-hidden" role="status" aria-live="polite">
+        {stageAnnouncement(props)}
       </p>
     </div>
   );

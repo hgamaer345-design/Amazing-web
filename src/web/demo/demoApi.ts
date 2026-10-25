@@ -48,17 +48,17 @@ const LIMITS: Record<QualityMode, number | null> = {
 /** What each mode means when everything runs in the browser. */
 const BROWSER_MODES: Record<QualityMode, Pick<QualityModeInfo, 'tagline' | 'description'>> = {
   standard: {
-    tagline: 'Fast · Whisper Tiny (~40 MB download)',
+    tagline: 'Fast · Whisper Tiny (about 90 MB to download the first time)',
     description:
       'The smallest speech model: quickest, and good for clear recordings. Speaker separation is the same in every mode.',
   },
   high: {
-    tagline: 'Accurate · Whisper Base (~80 MB download)',
+    tagline: 'Accurate · Whisper Base (about 125 MB to download the first time)',
     description:
       'A larger speech model that makes fewer mistakes. The best balance of speed and accuracy for most recordings.',
   },
   ultra: {
-    tagline: 'Most accurate · Whisper Small (~250 MB download)',
+    tagline: 'Most accurate · Whisper Small (about 300 MB to download the first time)',
     description:
       'The most accurate speech model, for accents, noise and fast talk. Several times slower than High: ' +
       'best on a computer.',
@@ -103,7 +103,9 @@ function speechEngine(): Promise<SpeechEngine> {
     .then((m) => m.createBrowserSpeechEngine())
     .catch((err: unknown) => {
       enginePromise = null; // e.g. offline: try loading it again next time
-      throw err;
+      throw Object.assign(new Error(err instanceof Error ? err.message : String(err)), {
+        code: 'ENGINE_START',
+      });
     });
   return enginePromise;
 }
@@ -166,6 +168,8 @@ interface LiveJob {
   progress: SpeechProgress;
   /** When the measurable part (speaker analysis onwards) began, for the ETA. */
   measuredSince: number | null;
+  /** Remaining time estimated at the last progress report, counted down in between. */
+  eta: { seconds: number; at: number } | null;
   cancelled: boolean;
   /** Stops the engine once it is running. */
   stop: (() => void) | null;
@@ -176,8 +180,39 @@ const MAX_ATTEMPTS = 2;
 const live = new Map<string, LiveJob>();
 /** Uploaded files kept in memory in case storing them in IndexedDB failed (quota). */
 const sessionAudio = new Map<string, Blob>();
-/** Id of the record this tab is processing. */
+/** Id of the record this tab is processing, and of that processing run. */
 let current: string | null = null;
+let currentRun: string | null = null;
+
+/**
+ * Closing the tab stops the job (it runs here, not on a server): ask first, and remember that the
+ * run ended because the page was closed, so it isn't counted like a crash (see recoverInterrupted).
+ */
+const CLOSED_RUN_KEY = 'speaker-transcriber-demo:closed-run:';
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', (event) => {
+    if (current) event.preventDefault();
+  });
+  window.addEventListener('pagehide', () => {
+    if (!currentRun) return;
+    try {
+      localStorage.setItem(CLOSED_RUN_KEY + currentRun, '1');
+    } catch {
+      // Without storage the run just counts as an attempt.
+    }
+  });
+}
+
+function closedNormally(runId: string | null | undefined): boolean {
+  if (!runId) return false;
+  try {
+    const closed = localStorage.getItem(CLOSED_RUN_KEY + runId) !== null;
+    localStorage.removeItem(CLOSED_RUN_KEY + runId);
+    return closed;
+  } catch {
+    return false;
+  }
+}
 let pumping = false;
 let pumpAgain = false;
 let started = false;
@@ -244,10 +279,13 @@ async function recoverInterrupted(): Promise<void> {
   const store = await getDemoStore();
   for (const rec of await store.all()) {
     if (!ACTIVE.has(rec.status) || rec.status === 'queued' || live.has(rec.id)) continue;
+    const closed = closedNormally(rec.runId);
     await store.update(rec.id, (r) => {
       if (!ACTIVE.has(r.status) || r.status === 'queued') return false;
       r.updatedAt = new Date().toISOString();
       r.runId = null;
+      // The tab was closed (not crashed): that run doesn't count towards giving up.
+      if (closed) r.attempts = Math.max(0, (r.attempts ?? 1) - 1);
       if (!r.hasAudio && !sessionAudio.has(r.id)) {
         r.status = 'error';
         r.error = jobError(
@@ -301,6 +339,7 @@ async function processJob(picked: DemoRecord): Promise<void> {
   const entry: LiveJob = {
     progress: { stage: 'loading', message: 'Starting…', fraction: null },
     measuredSince: null,
+    eta: null,
     cancelled: false,
     stop: null,
   };
@@ -319,6 +358,7 @@ async function processJob(picked: DemoRecord): Promise<void> {
       rec.attempts = (rec.attempts ?? 0) + 1;
     });
     if (!claimed) return;
+    currentRun = runId;
 
     const audio = (await store.getAudio(id).catch(() => undefined)) ?? sessionAudio.get(id);
     if (!audio) {
@@ -341,7 +381,12 @@ async function processJob(picked: DemoRecord): Promise<void> {
         { quality: claimed.quality, speakersExpected: claimed.speakersExpected },
         (progress) => {
           entry.progress = progress;
-          if (progress.stage !== 'loading' && entry.measuredSince == null) entry.measuredSince = Date.now();
+          const now = Date.now();
+          if (progress.stage !== 'loading' && entry.measuredSince == null) entry.measuredSince = now;
+          const f = progress.fraction;
+          if (entry.measuredSince != null && f != null && f > 0.03 && f < 1) {
+            entry.eta = { seconds: ((now - entry.measuredSince) / 1000 / f) * (1 - f), at: now };
+          }
         },
       );
       entry.stop = job.cancel;
@@ -370,6 +415,8 @@ async function processJob(picked: DemoRecord): Promise<void> {
   } finally {
     live.delete(id);
     current = null;
+    if (currentRun) closedNormally(currentRun); // clears a marker left by a bfcache pagehide
+    currentRun = null;
   }
 }
 
@@ -379,7 +426,18 @@ function speechError(code: string | undefined, detail: string | undefined): Tran
     case 'NO_SPEECH':
       return jobError('NO_SPEECH');
     case 'UNREADABLE_AUDIO':
-      return jobError('UNREADABLE_AUDIO');
+      return jobError(
+        'UNREADABLE_AUDIO',
+        'This browser couldn’t decode the audio. The file may use a format this browser doesn’t support ' +
+          '(try MP3 or WAV, or another browser), or it may be damaged.',
+      );
+    case 'ENGINE_START':
+      return jobError(
+        'TRANSCRIPTION_FAILED',
+        'The speech engine couldn’t start. If this page has been open for a while, the site may have been ' +
+          'updated: reload the page and press Retry.',
+        detail,
+      );
     case 'MODEL_DOWNLOAD':
       return jobError(
         'TRANSCRIPTION_FAILED',
@@ -473,10 +531,7 @@ async function toDetail(rec: DemoRecord): Promise<TranscriptDetail> {
   const started = rec.startedAt ? Date.parse(rec.startedAt) : null;
   let etaSeconds: number | null = summary.status === 'done' || summary.status === 'error' ? 0 : null;
   const fraction = job?.progress.fraction ?? null;
-  if (job?.measuredSince != null && fraction != null && fraction > 0.03 && fraction < 1) {
-    const elapsed = (now - job.measuredSince) / 1000;
-    etaSeconds = Math.max(1, Math.round((elapsed / fraction) * (1 - fraction)));
-  }
+  if (job?.eta) etaSeconds = Math.max(1, Math.round(job.eta.seconds - (now - job.eta.at) / 1000));
   let queuePosition: number | null = null;
   if (summary.status === 'queued') {
     const queued = (await (await getDemoStore()).all()).filter((r) => r.status === 'queued');

@@ -35,4 +35,17 @@ describe('clusterEmbeddings', () => {
     expect(new Set(labels).size).toBe(3);
     expect(Date.now() - started).toBeLessThan(10_000);
   });
+
+  it('never merges embeddings from the same group (cannot-link) unless a count forces it', () => {
+    const near = [
+      Float32Array.of(1, 0.05),
+      Float32Array.of(1, 0),
+      Float32Array.of(1, 0.02),
+      Float32Array.of(0.98, 0.01),
+    ];
+    expect(clusterEmbeddings(near, { threshold: 0.5 })).toEqual([0, 0, 0, 0]);
+    // 0 and 1 share a window, as do 2 and 3: two speakers, matched across the windows.
+    expect(clusterEmbeddings(near, { threshold: 0.5, cannotLink: [0, 0, 1, 1] })).toEqual([0, 1, 0, 1]);
+    expect(clusterEmbeddings(near, { numClusters: 1, cannotLink: [0, 0, 1, 1] })).toEqual([0, 0, 0, 0]);
+  });
 });

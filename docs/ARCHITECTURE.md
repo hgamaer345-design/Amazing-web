@@ -340,6 +340,11 @@ speech):
   matched to an anchor or left to the overlapping windows.
 - **One window** (≤ 10 s of audio, speaker count unknown): the segmentation model's own local
   speakers are used directly instead of clustering a few short embeddings.
+- **Short recordings** (≤ 12 windows, ~30 s): local speakers of the same window are never put in one
+  cluster (cannot-link, carried by complete linkage as an infinite distance); with so few
+  embeddings two different voices are often closer than the threshold (10–12 s clips: 1 speaker
+  found → 2, DER ~30% → ~2–7%). Longer recordings don't use it: there an occasional split of one
+  voice into two local speakers would add a phantom speaker.
 - A frame is only given to speakers that some window actually voted for, and invalid embeddings
   (non-finite, or from the zero-padded tail) are dropped.
 - The same settings for every quality mode (`DIARIZATION_SETTINGS`: 2 s hop, 2 s fingerprints): a

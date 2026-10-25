@@ -2,6 +2,7 @@
 // device: diarization (pyannote segmentation + WeSpeaker embeddings) finds who spoke when, then
 // Whisper transcribes each speaker turn.
 import { formatBytes } from '../../../shared/time';
+import type { QualityMode } from '../../../shared/types';
 import { diarize } from './diarize';
 import {
   DIARIZATION_SETTINGS,
@@ -17,8 +18,11 @@ import type { SpeechErrorCode, SpeechSegment, SpeechStage, WorkerRequest, Worker
 import { planTurns, speechSample, splitLongTurns } from './turns';
 
 const SAMPLE_RATE = 16000;
-// Share of the whole job each phase represents once the models are available.
-const SPEAKERS_SHARE = 0.25;
+/**
+ * Share of the job (after loading the models) taken by speaker analysis, which costs the same in
+ * every mode while Whisper's cost grows with its size; measured on a 5.5-minute conversation.
+ */
+const SPEAKERS_SHARE: Record<QualityMode, number> = { standard: 0.3, high: 0.2, ultra: 0.1 };
 
 function post(message: WorkerResponse): void {
   self.postMessage(message);
@@ -38,6 +42,7 @@ async function run({ jobId, audio, options }: WorkerRequest): Promise<void> {
     post({ type: 'progress', jobId, stage, message, fraction });
   const model = WHISPER_MODELS[options.quality];
   const settings = DIARIZATION_SETTINGS;
+  const speakersShare = SPEAKERS_SHARE[options.quality];
 
   progress('loading', 'Preparing speech models…', null);
   let sessions;
@@ -83,13 +88,13 @@ async function run({ jobId, audio, options }: WorkerRequest): Promise<void> {
       minEmbedSpeech: settings.minEmbedSpeechSec,
       numSpeakers: options.speakersExpected,
     },
-    (f) => progress('speakers', `Finding the speakers… ${Math.round(f * 100)}%`, f * SPEAKERS_SHARE),
+    (f) => progress('speakers', 'Finding the speakers…', f * speakersShare),
   );
   // Clips of at most ~28 s: Whisper hears 30 s at a time, and progress moves with every clip.
   const turns = splitLongTurns(audio, planTurns(segments, audio.length));
   if (turns.length === 0) throw new JobError('NO_SPEECH', 'No speech was detected in this audio.');
 
-  progress('transcribing', 'Detecting the language…', SPEAKERS_SHARE);
+  progress('transcribing', 'Detecting the language…', speakersShare);
   const language = await detectLanguage(asr, speechSample(audio, turns));
 
   const total = turns.reduce((n, t) => n + (t.end - t.start), 0);
@@ -97,11 +102,7 @@ async function run({ jobId, audio, options }: WorkerRequest): Promise<void> {
   const out: SpeechSegment[] = [];
   for (const turn of turns) {
     const share = done / total;
-    progress(
-      'transcribing',
-      `Transcribing… ${Math.round(share * 100)}%`,
-      SPEAKERS_SHARE + (1 - SPEAKERS_SHARE) * share,
-    );
+    progress('transcribing', 'Transcribing…', speakersShare + (1 - speakersShare) * share);
     const text = await transcribeClip(asr, audio.subarray(turn.start, turn.end), language);
     done += turn.end - turn.start;
     if (text) {

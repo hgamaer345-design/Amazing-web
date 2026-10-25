@@ -19,6 +19,7 @@ describe('collapseRepeats', () => {
   it('collapses a phrase repeated four or more times in a row', () => {
     expect(collapseRepeats('I mean, I mean, I mean, I mean, I mean, we tried.')).toBe('I mean, we tried.');
     expect(collapseRepeats('and then and then and then and then and then')).toBe('and then');
+    expect(collapseRepeats('Ah, ah, ah, ah, ah, ah, ah, ah, ah, ah, ah, ah')).toBe('Ah,');
   });
 
   it('leaves ordinary repetition alone', () => {

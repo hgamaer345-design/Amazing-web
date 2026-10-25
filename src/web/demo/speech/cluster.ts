@@ -52,8 +52,9 @@ function completeLinkage(dist: Float64Array, n: number): Merge[] {
       for (let j = 0; j < n; j++) {
         if (!active[j] || j === top) continue;
         const dj = dist[top * n + j]!;
-        // Prefer the previous chain element on ties so the chain terminates.
-        if (dj < bestDist || (dj === bestDist && j === prev)) {
+        // Prefer the previous chain element on ties so the chain terminates (distances can all be
+        // infinite under cannot-link constraints, so the first candidate is always taken).
+        if (best === -1 || dj < bestDist || (dj === bestDist && j === prev)) {
           best = j;
           bestDist = dj;
         }
@@ -85,12 +86,33 @@ function completeLinkage(dist: Float64Array, n: number): Merge[] {
  */
 export function clusterEmbeddings(
   embeddings: Float32Array[],
-  opts: { numClusters?: number | null; threshold?: number } = {},
+  opts: {
+    numClusters?: number | null;
+    threshold?: number;
+    /**
+     * Optional group per embedding (e.g. its analysis window): embeddings of one group are known
+     * to be different speakers, so their clusters are never merged by threshold. Complete linkage
+     * carries the constraint along, since a cluster's distance is that of its farthest pair.
+     */
+    cannotLink?: readonly number[];
+  } = {},
 ): number[] {
   const n = embeddings.length;
   if (n === 0) return [];
   if (n === 1) return [0];
-  const merges = completeLinkage(cosineDistances(embeddings), n).sort((x, y) => x.height - y.height);
+  const dist = cosineDistances(embeddings);
+  const groups = opts.cannotLink;
+  if (groups) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (groups[i] === groups[j]) {
+          dist[i * n + j] = Number.POSITIVE_INFINITY;
+          dist[j * n + i] = Number.POSITIVE_INFINITY;
+        }
+      }
+    }
+  }
+  const merges = completeLinkage(dist, n).sort((x, y) => x.height - y.height);
 
   const parent = Array.from({ length: n }, (_, i) => i);
   const find = (x: number): number => {

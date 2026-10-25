@@ -3,12 +3,17 @@
 /** Whisper's usual output for non-speech: sound tags ("[Music]", "(laughs)", "♪") and nothing else. */
 const SOUND_TAGS = /\[[^\]]*\]|\([^)]*\)|♪+/g;
 
-/** Collapses a phrase of 2+ words repeated 4+ times in a row (a known Whisper failure) to one copy. */
+/**
+ * Collapses Whisper's repetition loops to one copy: a phrase of 2+ words repeated 4+ times in a
+ * row, or a single word repeated 8+ times ("Ah, ah, ah, …" on a laugh). Ordinary repetition
+ * ("no, no, no", "very very very very good") is left alone.
+ */
 export function collapseRepeats(text: string): string {
   const words = text.split(/\s+/).filter(Boolean);
   const key = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
-  for (let n = 2; n <= 8; n++) {
-    for (let i = 0; i + n * 4 <= words.length; i++) {
+  for (let n = 1; n <= 8; n++) {
+    const minReps = n === 1 ? 8 : 4;
+    for (let i = 0; i + n * minReps <= words.length; i++) {
       let reps = 1;
       while (
         i + (reps + 1) * n <= words.length &&
@@ -16,7 +21,7 @@ export function collapseRepeats(text: string): string {
       ) {
         reps++;
       }
-      if (reps >= 4) words.splice(i + n, (reps - 1) * n);
+      if (reps >= minReps) words.splice(i + n, (reps - 1) * n);
     }
   }
   return words.join(' ');

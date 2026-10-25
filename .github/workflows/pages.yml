@@ -35,6 +35,9 @@ jobs:
           cache: npm
 
       - run: npm ci
+        env:
+          # transformers.js pulls in onnxruntime-node, whose install would fetch ~240 MB of unused CUDA libraries.
+          ONNXRUNTIME_NODE_INSTALL: skip
 
       - name: Build the demo
         run: npm run build:pages

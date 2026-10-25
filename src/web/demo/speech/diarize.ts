@@ -41,6 +41,8 @@ export interface DiarizationOptions {
    * Unmatched speakers still get an embedding. 0 or unset = embed every window (the reference).
    */
   embedStride?: number;
+  /** Up to this many windows, local speakers of one window are never clustered together. */
+  cannotLinkMaxWindows?: number;
   /** Least speech (seconds) a local speaker needs in a window to get its own embedding. */
   minEmbedSpeech?: number;
   /** Least activity agreement (intersection over union, 0..1) to reuse a neighbour's speaker. */
@@ -312,9 +314,18 @@ export async function diarize(
     const valid = pairs.map((_, p) => p).filter((p) => embeddings[p] !== null);
     if (valid.length === 0) return [];
     // 3. Global speakers.
+    // With only a few windows (short recordings) there is too little evidence to tell voices
+    // apart by threshold alone, so local speakers of one window — whom the segmentation model
+    // already told apart — are kept in different clusters. Longer recordings don't need this, and
+    // there an occasional split of one voice into two local speakers would add a phantom speaker.
+    const constrain = labels.length <= (options.cannotLinkMaxWindows ?? 12);
     const clusters = clusterEmbeddings(
       valid.map((p) => embeddings[p]!),
-      { numClusters: options.numSpeakers ?? null, threshold: options.threshold ?? 0.5 },
+      {
+        numClusters: options.numSpeakers ?? null,
+        threshold: options.threshold ?? 0.5,
+        cannotLink: constrain ? valid.map((p) => pairs[p]!.window) : undefined,
+      },
     );
     globalCount = Math.max(...clusters) + 1;
     const clusterOf = new Map<number, number>(valid.map((p, idx) => [p, clusters[idx]!]));

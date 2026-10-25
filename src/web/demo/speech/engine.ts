@@ -9,10 +9,13 @@ import type {
   WorkerResponse,
 } from './protocol';
 
-/** UNREADABLE_AUDIO: the browser can't decode the file; DECODE_MEMORY: too long to decode here. */
+/**
+ * UNREADABLE_AUDIO: the browser can't decode the file; DECODE_MEMORY: too long to decode here;
+ * ENGINE_START: the worker didn't start (e.g. the site was redeployed since the page loaded).
+ */
 export class SpeechJobError extends Error {
   constructor(
-    readonly code: SpeechErrorCode | 'UNREADABLE_AUDIO' | 'DECODE_MEMORY',
+    readonly code: SpeechErrorCode | 'UNREADABLE_AUDIO' | 'DECODE_MEMORY' | 'ENGINE_START',
     message: string,
   ) {
     super(message);
@@ -92,9 +95,11 @@ export function createBrowserSpeechEngine(): SpeechEngine {
             w.removeEventListener('message', onMessage);
             w.removeEventListener('error', onError);
           };
+          let heard = false;
           const onMessage = (e: MessageEvent<WorkerResponse>) => {
             const msg = e.data;
             if (msg.jobId !== jobId) return;
+            heard = true;
             if (msg.type === 'progress') {
               onProgress({ stage: msg.stage, message: msg.message, fraction: msg.fraction });
               return;
@@ -121,7 +126,13 @@ export function createBrowserSpeechEngine(): SpeechEngine {
             cleanup();
             w.terminate();
             if (worker === w) worker = null;
-            rej(new SpeechJobError('FAILED', e.message || 'The speech engine stopped unexpectedly.'));
+            // Failing before saying anything usually means its script couldn't load.
+            rej(
+              new SpeechJobError(
+                heard ? 'FAILED' : 'ENGINE_START',
+                e.message || 'The speech engine stopped unexpectedly.',
+              ),
+            );
           };
           w.addEventListener('message', onMessage);
           w.addEventListener('error', onError);
