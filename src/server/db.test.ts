@@ -106,6 +106,47 @@ describe('TranscriptRepository', () => {
     expect(repo.referencedAudioFiles().size).toBe(0);
   });
 
+  it('enforces daily quality limits: pending and finished jobs count, failures and deletions do not refund', () => {
+    const { repo, clock } = setup();
+    const day = '2026-01-01';
+    const ultra = (id: string) => ({ ...input(id), quality: 'ultra' as const, quotaKey: 'client-1', quotaDay: day });
+    expect(repo.usage('client-1', 'ultra', day, 2)).toEqual({ used: 0, limit: 2, remaining: 2 });
+
+    expect(repo.createWithQuota(ultra('a'), 2)?.quality).toBe('ultra');
+    expect(repo.createWithQuota(ultra('b'), 2)).not.toBeNull();
+    expect(repo.createWithQuota(ultra('c'), 2)).toBeNull(); // two pending already
+    expect(repo.usage('client-1', 'ultra', day, 2).remaining).toBe(0);
+    // Other clients and other modes are unaffected.
+    expect(repo.createWithQuota({ ...ultra('d'), quotaKey: 'client-2' }, 2)).not.toBeNull();
+    expect(repo.createWithQuota({ ...ultra('e'), quality: 'high' }, null)?.quality).toBe('high');
+
+    // a fails (gives its use back); b completes (counted for good, even after deletion).
+    repo.claimNextJob('w1', 60_000);
+    repo.failJob('a', 'w1', { code: 'TRANSCRIPTION_FAILED', message: 'x' });
+    clock.advance(1);
+    repo.claimNextJob('w1', 60_000);
+    repo.completeJob('b', 'w1', { speakers: [], rows: [], languageCode: null });
+    repo.delete('b');
+    expect(repo.usage('client-1', 'ultra', day, 2)).toEqual({ used: 1, limit: 2, remaining: 1 });
+
+    // Retrying the failed job is counted again, against the retry day.
+    expect(repo.retryWithQuota('a', { day: '2026-01-02', limit: 2 })).toMatchObject({ status: 'queued' });
+    expect(repo.get('a')?.quotaDay).toBe('2026-01-02');
+    expect(repo.usage('client-1', 'ultra', day, 2).used).toBe(1);
+    expect(repo.usage('client-1', 'ultra', '2026-01-02', 2).used).toBe(1);
+  });
+
+  it('refuses a retry when the limit for the retry day is used up', () => {
+    const { repo } = setup();
+    const day = '2026-01-01';
+    repo.createWithQuota({ ...input('a'), quality: 'ultra', quotaKey: 'k', quotaDay: day }, 1);
+    repo.claimNextJob('w1', 60_000);
+    repo.failJob('a', 'w1', { code: 'TRANSCRIPTION_FAILED', message: 'x' });
+    repo.createWithQuota({ ...input('b'), quality: 'ultra', quotaKey: 'k', quotaDay: day }, 1);
+    expect(repo.retryWithQuota('a', { day, limit: 1 })).toBe('quota');
+    expect(repo.get('a')?.status).toBe('error');
+  });
+
   it('saves documents with optimistic concurrency', () => {
     const { repo } = setup();
     repo.create(input('a'));

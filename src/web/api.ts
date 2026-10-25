@@ -9,12 +9,14 @@ import type {
   ExportFormat,
   GetTranscriptResponse,
   ListTranscriptsResponse,
+  QualityMode,
   SaveDocumentRequest,
   SaveDocumentResponse,
   TranscriptDetail,
   TranscriptDocument,
   TranscriptSummary,
   UpdateTranscriptResponse,
+  UsageResponse,
 } from '../shared/types';
 import { ApiError } from './apiError';
 import * as demo from './demo/demoApi';
@@ -77,6 +79,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export function getConfig(): Promise<AppConfigResponse> {
   if (isDemoMode) return demo.getConfig();
   return request<AppConfigResponse>('/api/config');
+}
+
+/** Today's use of limited quality modes (e.g. Ultra High's free daily uses) for this client. */
+export function getUsage(): Promise<UsageResponse> {
+  if (isDemoMode) return demo.getUsage();
+  return request<UsageResponse>('/api/usage');
 }
 
 export async function listTranscripts(): Promise<TranscriptSummary[]> {
@@ -170,6 +178,8 @@ export interface UploadOptions {
   keepAudio: boolean;
   /** Duration measured in the browser, used if the server can't read it from the file. */
   clientDurationSec: number | null;
+  /** Defaults to "high" on the server. */
+  quality?: QualityMode;
 }
 
 export interface UploadProgress {
@@ -197,6 +207,7 @@ export function uploadTranscript(
     const form = new FormData();
     if (options.speakersExpected != null) form.append('speakersExpected', String(options.speakersExpected));
     form.append('keepAudio', options.keepAudio ? 'true' : 'false');
+    if (options.quality) form.append('quality', options.quality);
     if (options.clientDurationSec != null && Number.isFinite(options.clientDurationSec)) {
       form.append('clientDurationSec', String(options.clientDurationSec));
     }

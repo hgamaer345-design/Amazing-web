@@ -8,7 +8,10 @@ import type { ProviderResult, ProviderSegment, TranscribeRequest, TranscriptionP
 export interface DeepgramOptions {
   apiKey: string;
   baseUrl: string;
+  /** Model for High / Ultra High. */
   model: string;
+  /** Model for Standard. */
+  standardModel: string;
   diarizeModel: string;
 }
 
@@ -93,6 +96,16 @@ export function mapDeepgramResponse(res: DgResponse): ProviderResult {
     segments,
     languageCode: channel?.detected_language ?? null,
     durationSec: typeof res.metadata?.duration === 'number' ? res.metadata.duration : null,
+    ...(alt?.words?.length
+      ? {
+          words: alt.words.map((w) => ({
+            speaker: label(w.speaker),
+            startMs: sec(w.start),
+            endMs: sec(w.end),
+            text: w.punctuated_word ?? w.word,
+          })),
+        }
+      : {}),
   };
 }
 
@@ -103,7 +116,7 @@ export function createDeepgramProvider(opts: DeepgramOptions): TranscriptionProv
 
     async transcribe(req: TranscribeRequest): Promise<ProviderResult> {
       const params = new URLSearchParams({
-        model: opts.model,
+        model: req.quality === 'standard' ? opts.standardModel : opts.model,
         diarize_model: opts.diarizeModel,
         detect_language: 'true',
         punctuate: 'true',

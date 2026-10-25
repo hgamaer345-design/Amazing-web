@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type {
   ErrorCode,
+  ModeUsage,
   ProviderName,
+  QualityMode,
   Speaker,
   TranscriptDocument,
   TranscriptError,
@@ -25,6 +27,11 @@ export interface TranscriptRecord {
   durationSec: number | null;
   status: TranscriptStatus;
   provider: ProviderName;
+  quality: QualityMode;
+  /** Anonymous client key the job counts against for daily quality limits (null = not counted). */
+  quotaKey: string | null;
+  /** UTC day ("YYYY-MM-DD") the job counts against. */
+  quotaDay: string | null;
   /** The provider's id for the async job (e.g. AssemblyAI transcript id), used to resume polling. */
   providerJobId: string | null;
   languageCode: string | null;
@@ -64,6 +71,12 @@ export interface NewTranscriptInput {
   keepAudio: boolean;
   audioFile: string;
   estimatedTotalSeconds: number | null;
+  /** Defaults to "high". */
+  quality?: QualityMode;
+  /** Client key for daily limits; omit (null) to not count the job. */
+  quotaKey?: string | null;
+  /** UTC day the job counts against (required with quotaKey). */
+  quotaDay?: string | null;
 }
 
 export type SaveDocumentResult =
@@ -109,6 +122,21 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_transcripts_created ON transcripts (created_at DESC);
   CREATE INDEX idx_transcripts_status ON transcripts (status, created_at);
   `,
+  `
+  ALTER TABLE transcripts ADD COLUMN quality TEXT NOT NULL DEFAULT 'high';
+  ALTER TABLE transcripts ADD COLUMN quota_key TEXT;
+  ALTER TABLE transcripts ADD COLUMN quota_day TEXT;
+  CREATE INDEX idx_transcripts_quota ON transcripts (quota_key, quota_day, quality, status);
+  -- Completed jobs per client, day and mode. Never decremented, so deleting a finished
+  -- transcript doesn't give a use back.
+  CREATE TABLE usage_counters (
+    client_key TEXT NOT NULL,
+    day        TEXT NOT NULL,
+    mode       TEXT NOT NULL,
+    count      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (client_key, day, mode)
+  );
+  `,
 ];
 
 /** Opens (and migrates) the database. Pass ":memory:" for tests. */
@@ -135,7 +163,7 @@ function migrate(db: DB): void {
 // Columns for list/get queries (everything except the potentially large document body).
 const RECORD_COLUMNS = `
   id, title, original_filename, mime_type, extension, size_bytes, duration_sec, status, provider,
-  provider_job_id, language_code, speakers_expected, keep_audio, audio_file, error_code, error_message,
+  quality, quota_key, quota_day, provider_job_id, language_code, speakers_expected, keep_audio, audio_file, error_code, error_message,
   error_detail, attempts, lease_owner, lease_expires_at, not_before, estimated_total_seconds, started_at,
   completed_at, processing_seconds, document_version, speaker_count, row_count, created_at, updated_at`;
 
@@ -149,6 +177,9 @@ interface Row {
   duration_sec: number | null;
   status: string;
   provider: string;
+  quality: string;
+  quota_key: string | null;
+  quota_day: string | null;
   provider_job_id: string | null;
   language_code: string | null;
   speakers_expected: number | null;
@@ -183,6 +214,9 @@ function toRecord(r: Row): TranscriptRecord {
     durationSec: r.duration_sec,
     status: r.status as TranscriptStatus,
     provider: r.provider as ProviderName,
+    quality: r.quality as QualityMode,
+    quotaKey: r.quota_key,
+    quotaDay: r.quota_day,
     providerJobId: r.provider_job_id,
     languageCode: r.language_code,
     speakersExpected: r.speakers_expected,
@@ -297,14 +331,57 @@ export class TranscriptRepository {
       .prepare(
         `INSERT INTO transcripts (
           id, title, original_filename, mime_type, extension, size_bytes, duration_sec, status, provider,
-          speakers_expected, keep_audio, audio_file, estimated_total_seconds, created_at, updated_at
+          quality, quota_key, quota_day, speakers_expected, keep_audio, audio_file, estimated_total_seconds,
+          created_at, updated_at
         ) VALUES (
           @id, @title, @originalFilename, @mimeType, @extension, @sizeBytes, @durationSec, 'queued', @provider,
-          @speakersExpected, @keepAudio, @audioFile, @estimatedTotalSeconds, @now, @now
+          @quality, @quotaKey, @quotaDay, @speakersExpected, @keepAudio, @audioFile, @estimatedTotalSeconds,
+          @now, @now
         )`,
       )
-      .run({ ...input, keepAudio: input.keepAudio ? 1 : 0, now });
+      .run({
+        ...input,
+        quality: input.quality ?? 'high',
+        quotaKey: input.quotaKey ?? null,
+        quotaDay: input.quotaKey ? (input.quotaDay ?? null) : null,
+        keepAudio: input.keepAudio ? 1 : 0,
+        now,
+      });
     return this.get(input.id)!;
+  }
+
+  /**
+   * Creates the job only if the client still has a use of its quality mode left today
+   * (`limit` null = unlimited). Check and insert happen in one transaction, so concurrent
+   * uploads can't overshoot the limit. Returns null when the limit is reached.
+   */
+  createWithQuota(
+    input: NewTranscriptInput & { quotaKey: string; quotaDay: string },
+    limit: number | null,
+  ): TranscriptRecord | null {
+    return this.db.transaction(() => {
+      const mode = input.quality ?? 'high';
+      if (limit != null && this.usage(input.quotaKey, mode, input.quotaDay, limit).used >= limit) return null;
+      return this.create(input);
+    })();
+  }
+
+  /**
+   * A client's use of a mode on a day: finished jobs (counter) plus jobs still queued or
+   * processing. Failed jobs don't count, so a failure never costs the user a use.
+   */
+  usage(clientKey: string, mode: QualityMode, day: string, limit: number | null): ModeUsage {
+    const counted = this.db
+      .prepare(`SELECT count FROM usage_counters WHERE client_key = ? AND day = ? AND mode = ?`)
+      .get(clientKey, day, mode) as { count: number } | undefined;
+    const pending = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM transcripts WHERE quota_key = ? AND quota_day = ? AND quality = ?
+           AND status IN ('queued', 'transcribing', 'separating')`,
+      )
+      .get(clientKey, day, mode) as { n: number };
+    const used = (counted?.count ?? 0) + pending.n;
+    return { used, limit, remaining: limit == null ? null : Math.max(0, limit - used) };
   }
 
   updateTitle(id: string, title: string): TranscriptRecord | undefined {
@@ -339,17 +416,34 @@ export class TranscriptRepository {
     })();
   }
 
-  /** User-initiated retry of a failed job whose audio is still stored. Returns undefined if not allowed. */
+  /**
+   * User-initiated retry of a failed job whose audio is still stored. Returns undefined if not
+   * allowed. `retryWithQuota` with `quota`: a job that counts against a daily limit is re-counted for `quota.day`
+   * and refused with "quota" when that day's limit is already used up.
+   */
   retry(id: string): TranscriptRecord | undefined {
-    const res = this.db
-      .prepare(
-        `UPDATE transcripts SET status = 'queued', error_code = NULL, error_message = NULL, error_detail = NULL,
-           attempts = 0, provider_job_id = NULL, not_before = NULL, started_at = NULL, lease_owner = NULL,
-           lease_expires_at = NULL, updated_at = ?
-         WHERE id = ? AND status = 'error' AND audio_file IS NOT NULL`,
-      )
-      .run(this.iso(), id);
-    return res.changes ? this.get(id) : undefined;
+    const res = this.retryWithQuota(id);
+    return res === 'quota' ? undefined : res;
+  }
+
+  retryWithQuota(id: string, quota?: { day: string; limit: number | null }): TranscriptRecord | undefined | 'quota' {
+    return this.db.transaction(() => {
+      const rec = this.get(id);
+      if (!rec || rec.status !== 'error' || !rec.audioFile) return undefined;
+      const day = rec.quotaKey && quota ? quota.day : rec.quotaDay;
+      if (rec.quotaKey && quota && quota.limit != null) {
+        if (this.usage(rec.quotaKey, rec.quality, quota.day, quota.limit).used >= quota.limit) return 'quota';
+      }
+      this.db
+        .prepare(
+          `UPDATE transcripts SET status = 'queued', error_code = NULL, error_message = NULL, error_detail = NULL,
+             attempts = 0, provider_job_id = NULL, not_before = NULL, started_at = NULL, lease_owner = NULL,
+             lease_expires_at = NULL, quota_day = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(day, this.iso(), id);
+      return this.get(id);
+    })();
   }
 
   saveDocument(
@@ -466,9 +560,21 @@ export class TranscriptRepository {
     const now = this.now();
     return this.db.transaction(() => {
       const row = this.db
-        .prepare(`SELECT started_at FROM transcripts WHERE id = ? AND lease_owner = ?`)
-        .get(id, workerId) as { started_at: string | null } | undefined;
+        .prepare(
+          `SELECT started_at, quota_key, quota_day, quality FROM transcripts WHERE id = ? AND lease_owner = ?`,
+        )
+        .get(id, workerId) as
+        | { started_at: string | null; quota_key: string | null; quota_day: string | null; quality: string }
+        | undefined;
       if (!row) return false;
+      if (row.quota_key && row.quota_day) {
+        this.db
+          .prepare(
+            `INSERT INTO usage_counters (client_key, day, mode, count) VALUES (?, ?, ?, 1)
+             ON CONFLICT (client_key, day, mode) DO UPDATE SET count = count + 1`,
+          )
+          .run(row.quota_key, row.quota_day, row.quality);
+      }
       const processingSeconds = row.started_at ? (now - Date.parse(row.started_at)) / 1000 : null;
       const res = this.db
         .prepare(

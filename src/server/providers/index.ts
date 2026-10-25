@@ -16,6 +16,7 @@ export function createProvider(config: AppConfig): TranscriptionProvider | null 
         apiKey: config.assemblyai.apiKey!,
         baseUrl: config.assemblyai.baseUrl,
         speechModels: config.assemblyai.speechModels,
+        standardSpeechModels: config.assemblyai.standardSpeechModels,
         pollIntervalMs: config.worker.providerPollIntervalMs,
       });
     case 'deepgram':
@@ -23,6 +24,7 @@ export function createProvider(config: AppConfig): TranscriptionProvider | null 
         apiKey: config.deepgram.apiKey!,
         baseUrl: config.deepgram.baseUrl,
         model: config.deepgram.model,
+        standardModel: config.deepgram.standardModel,
         diarizeModel: config.deepgram.diarizeModel,
       });
     case 'mock':

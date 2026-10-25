@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_MAX_UPLOAD_BYTES, type ProviderName } from '../shared/types';
+import { DEFAULT_ULTRA_DAILY_LIMIT } from '../shared/quality';
+import { DEFAULT_MAX_UPLOAD_BYTES, type ProviderName, type QualityMode } from '../shared/types';
 
 export interface AppConfig {
   port: number;
@@ -21,13 +22,18 @@ export interface AppConfig {
     apiKey: string | undefined;
     /** e.g. https://api.assemblyai.com or https://api.eu.assemblyai.com */
     baseUrl: string;
-    /** Ordered `speech_models` list; the API falls back to later models for unsupported languages. */
+    /** Ordered `speech_models` list (High / Ultra High); the API falls back to later models for unsupported languages. */
     speechModels: string[];
+    /** `speech_models` for the Standard quality mode. */
+    standardSpeechModels: string[];
   };
   deepgram: {
     apiKey: string | undefined;
     baseUrl: string;
+    /** Model for High / Ultra High. */
     model: string;
+    /** Model for the Standard quality mode. */
+    standardModel: string;
     /** `diarize_model` value ("latest", "v1", "v2"). */
     diarizeModel: string;
   };
@@ -54,6 +60,8 @@ export interface AppConfig {
   deleteProviderData: boolean;
   basicAuth: { user: string; password: string } | null;
   trustProxy: boolean;
+  /** Free uses per client per UTC day for each quality mode; null = unlimited. */
+  qualityLimits: Record<QualityMode, number | null>;
 }
 
 function int(value: string | undefined, fallback: number, min = 0): number {
@@ -79,6 +87,12 @@ function list(value: string | undefined): string[] | undefined {
     .map((s) => s.trim())
     .filter(Boolean);
   return items?.length ? items : undefined;
+}
+
+/** A non-negative integer, or "unlimited". */
+function dailyLimit(value: string | undefined): number | null {
+  if (value?.trim().toLowerCase() === 'unlimited') return null;
+  return int(value, DEFAULT_ULTRA_DAILY_LIMIT, 0);
 }
 
 const PROVIDERS: readonly ProviderName[] = ['assemblyai', 'deepgram', 'mock'];
@@ -139,11 +153,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       apiKey: assemblyKey,
       baseUrl: (str(env.ASSEMBLYAI_BASE_URL) ?? 'https://api.assemblyai.com').replace(/\/+$/, ''),
       speechModels: list(env.ASSEMBLYAI_SPEECH_MODELS) ?? ['universal-3-5-pro', 'universal-2'],
+      standardSpeechModels: list(env.ASSEMBLYAI_STANDARD_SPEECH_MODELS) ?? ['universal-2'],
     },
     deepgram: {
       apiKey: deepgramKey,
       baseUrl: (str(env.DEEPGRAM_BASE_URL) ?? 'https://api.deepgram.com').replace(/\/+$/, ''),
       model: str(env.DEEPGRAM_MODEL) ?? 'nova-3',
+      standardModel: str(env.DEEPGRAM_STANDARD_MODEL) ?? 'nova-2',
       diarizeModel: str(env.DEEPGRAM_DIARIZE_MODEL) ?? 'latest',
     },
     mock: {
@@ -161,5 +177,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     deleteProviderData: bool(env.DELETE_PROVIDER_DATA, true),
     basicAuth: authUser && authPassword ? { user: authUser, password: authPassword } : null,
     trustProxy: bool(env.TRUST_PROXY, false),
+    qualityLimits: { standard: null, high: null, ultra: dailyLimit(env.ULTRA_DAILY_LIMIT) },
   };
 }

@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { DEFAULT_QUALITY_MODE, DEFAULT_ULTRA_DAILY_LIMIT, qualityModeInfo } from '../../shared/quality';
 import { DEFAULT_MAX_UPLOAD_BYTES, ACCEPTED_EXTENSIONS, type AppConfigResponse } from '../../shared/types';
 import { getConfig } from '../api';
 
@@ -17,6 +18,8 @@ const FALLBACK: AppConfigResponse = {
   acceptedExtensions: ACCEPTED_EXTENSIONS,
   supportsSpeakerCount: true,
   maxSpeakers: 10,
+  qualityModes: qualityModeInfo({ ultra: DEFAULT_ULTRA_DAILY_LIMIT }),
+  defaultQuality: DEFAULT_QUALITY_MODE,
 };
 
 const ConfigContext = createContext<AppConfigState>({ config: FALLBACK, loaded: false, error: null });

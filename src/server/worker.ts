@@ -237,7 +237,7 @@ export function createWorker(deps: WorkerDeps): JobWorker {
       }
       repo.setEstimate(
         rec.id,
-        estimateProcessingSeconds(p.name, rec.durationSec, repo.processingStats(p.name), rec.sizeBytes),
+        estimateProcessingSeconds(p.name, rec.durationSec, repo.processingStats(p.name), rec.sizeBytes, rec.quality),
       );
       log.info('Processing transcript', {
         id: rec.id,
@@ -264,6 +264,7 @@ export function createWorker(deps: WorkerDeps): JobWorker {
           mimeType: rec.mimeType,
           sizeBytes: rec.sizeBytes,
           speakersExpected: rec.speakersExpected,
+          quality: rec.quality,
           signal: controller.signal,
           originalFilename: rec.originalFilename,
           onJobCreated: (providerJobId) => {
@@ -277,7 +278,10 @@ export function createWorker(deps: WorkerDeps): JobWorker {
 
       if (!repo.markSeparating(rec.id, workerId)) abort('lease_lost');
       controller.signal.throwIfAborted();
-      const { speakers, rows } = buildDocument(result.segments);
+      // Ultra High rebuilds rows from per-word speaker labels, so rows split exactly where the
+      // speaker changes (utterance-level output can lump a quick interjection into a turn).
+      const useWords = rec.quality === 'ultra' && result.words?.length;
+      const { speakers, rows } = buildDocument(useWords ? result.words! : result.segments);
       if (rows.length === 0) {
         await fail(p, rec, state.providerJobId, jobError('NO_SPEECH'));
         return;

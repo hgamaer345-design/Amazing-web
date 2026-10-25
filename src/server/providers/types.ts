@@ -1,4 +1,4 @@
-import type { ProviderName } from '../../shared/types';
+import type { ProviderName, QualityMode } from '../../shared/types';
 
 /** One diarized chunk of speech as returned by a provider (an utterance, paragraph or sentence). */
 export interface ProviderSegment {
@@ -16,6 +16,11 @@ export interface ProviderResult {
   languageCode: string | null;
   /** Audio duration reported by the provider, if any. */
   durationSec: number | null;
+  /**
+   * Word-level results with per-word speaker labels, when the provider returns them. Used by the
+   * Ultra High mode to split rows exactly where the speaker changes.
+   */
+  words?: ProviderSegment[];
 }
 
 export interface TranscribeRequest {
@@ -25,6 +30,8 @@ export interface TranscribeRequest {
   sizeBytes: number;
   /** User's hint for the number of speakers; null = auto-detect. */
   speakersExpected: number | null;
+  /** Quality mode; selects the provider model. Defaults to "high". */
+  quality?: QualityMode;
   /** Aborted when the job is deleted, the lease is lost, the job times out or the server shuts down. */
   signal: AbortSignal;
   /**

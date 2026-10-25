@@ -1,6 +1,6 @@
 // Browser persistence for the static demo: IndexedDB, falling back to memory where it is
 // unavailable (some private-browsing modes).
-import type { Speaker, TranscriptError, TranscriptRow } from '../../shared/types';
+import type { QualityMode, Speaker, TranscriptError, TranscriptRow } from '../../shared/types';
 
 export interface DemoRecord {
   id: string;
@@ -10,6 +10,9 @@ export interface DemoRecord {
   sizeBytes: number;
   durationSec: number | null;
   speakersExpected: number | null;
+  quality: QualityMode;
+  /** UTC day the job counts against for daily quality limits. */
+  quotaDay: string;
   keepAudio: boolean;
   /** Whether an audio blob is stored for this record. */
   hasAudio: boolean;

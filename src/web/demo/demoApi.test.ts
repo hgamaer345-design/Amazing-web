@@ -68,6 +68,39 @@ describe('demo API', () => {
     expect((await demo.retryTranscript(summary.id)).status).toBe('queued');
   });
 
+  it('allows 3 Ultra High transcriptions per day; failures do not use one up', async () => {
+    localStorage.clear();
+    vi.setSystemTime(new Date('2026-10-25T10:00:00Z'));
+    expect((await demo.getUsage()).modes.ultra).toEqual({ used: 0, limit: 3, remaining: 3 });
+
+    const failed = await upload('fail.wav', { quality: 'ultra' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect((await demo.getTranscript(failed.summary.id)).status).toBe('error');
+    expect((await demo.getUsage()).modes.ultra.used).toBe(0);
+
+    const ok = await upload('a.wav', { quality: 'ultra' });
+    expect(ok.summary.quality).toBe('ultra');
+    expect((await demo.getUsage()).modes.ultra.used).toBe(1); // still processing counts
+    await upload('b.wav', { quality: 'ultra' });
+    await upload('c.wav', { quality: 'ultra' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await demo.listTranscripts(); // settles finished jobs
+    const usage = await demo.getUsage();
+    expect(usage.modes.ultra).toEqual({ used: 3, limit: 3, remaining: 0 });
+    expect(usage.resetsAt).toBe('2026-10-26T00:00:00.000Z');
+
+    const refused = demo.uploadTranscript(
+      wavFile('d.wav'),
+      { speakersExpected: null, keepAudio: false, clientDurationSec: 30, quality: 'ultra' },
+      () => {},
+    );
+    await expect(refused.promise).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED', status: 429 });
+    // Other modes are unlimited, and the limit resets the next UTC day.
+    expect((await upload('e.wav', { quality: 'high' })).summary.quality).toBe('high');
+    vi.setSystemTime(new Date('2026-10-26T00:00:01Z'));
+    expect((await demo.getUsage()).modes.ultra.remaining).toBe(3);
+  });
+
   it('rejects unsupported files and can be cancelled', async () => {
     const bad = demo.uploadTranscript(
       new File(['hello'], 'notes.txt'),

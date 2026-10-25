@@ -1,4 +1,7 @@
-import type { ProviderName } from '../shared/types';
+import type { ProviderName, QualityMode } from '../shared/types';
+
+/** Relative processing time per quality mode. */
+const QUALITY_FACTOR: Record<QualityMode, number> = { standard: 0.7, high: 1, ultra: 1.25 };
 
 /**
  * Rough processing speed per provider, as "seconds of processing per second of audio",
@@ -21,9 +24,11 @@ export function estimateProcessingSeconds(
   durationSec: number | null,
   history: { durationSec: number; processingSeconds: number }[] = [],
   uploadBytes?: number,
+  quality: QualityMode = 'high',
 ): number | null {
   const d = DEFAULTS[provider];
-  if (provider === 'mock') return d.overheadSec;
+  const factor = QUALITY_FACTOR[quality];
+  if (provider === 'mock') return Math.round(d.overheadSec * factor);
   if (durationSec == null || !Number.isFinite(durationSec) || durationSec <= 0) {
     // Without a duration, fall back to file size (~1 MB per minute of compressed audio).
     if (!uploadBytes) return null;
@@ -39,5 +44,5 @@ export function estimateProcessingSeconds(
     const measured = Math.max(d.overheadSec / 2, durationSec * median);
     estimate = (estimate + measured * 2) / 3;
   }
-  return Math.round(Math.max(5, estimate));
+  return Math.round(Math.max(5, estimate * factor));
 }

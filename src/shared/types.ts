@@ -31,6 +31,13 @@ export const DEFAULT_MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 export type ProviderName = 'assemblyai' | 'deepgram' | 'mock';
 
 /**
+ * Transcription quality, chosen per upload (see src/shared/quality.ts for what each does).
+ * "ultra" is limited to a number of free uses per client per day.
+ */
+export const QUALITY_MODES = ['standard', 'high', 'ultra'] as const;
+export type QualityMode = (typeof QUALITY_MODES)[number];
+
+/**
  * Lifecycle of a transcript job on the server. "Uploading" is a client-only stage
  * (the record is created once the upload has fully arrived).
  *   queued       -> waiting for a worker slot
@@ -105,6 +112,8 @@ export interface TranscriptSummary {
   durationSec: number | null;
   status: TranscriptStatus;
   provider: ProviderName;
+  /** Quality mode the file was (or is being) transcribed with. (Optional until integration; always sent.) */
+  quality?: QualityMode;
   /** BCP-47-ish language code detected by the provider, e.g. "en", "es", "en_us". */
   languageCode: string | null;
   speakersExpected: number | null;
@@ -140,12 +149,49 @@ export interface AppConfigResponse {
   maxSpeakers: number;
   /** Static demo build (no server): transcription is simulated in the browser. */
   demoMode?: boolean;
+  /** Quality modes in display order, with their free daily limits. (Optional until integration; always sent.) */
+  qualityModes?: QualityModeInfo[];
+  defaultQuality?: QualityMode;
+}
+
+export interface QualityModeInfo {
+  id: QualityMode;
+  /** "Standard", "High", "Ultra High" */
+  label: string;
+  /** One line, e.g. "Fast, for clear recordings". */
+  tagline: string;
+  /** What the mode does, for a tooltip or details panel. */
+  description: string;
+  /** Relative ratings 1–5 for meters in the UI. */
+  speed: number;
+  accuracy: number;
+  /** Free uses per client per day; null = unlimited. */
+  dailyLimit: number | null;
+}
+
+/** GET /api/usage — the requesting client's usage of limited quality modes today. */
+export interface UsageResponse {
+  /** UTC day the counts apply to, "YYYY-MM-DD". */
+  day: string;
+  /** ISO timestamp when the daily limits reset (next UTC midnight). */
+  resetsAt: string;
+  modes: Record<QualityMode, ModeUsage>;
+}
+
+export interface ModeUsage {
+  /** Uses counted today (finished jobs plus jobs still processing). */
+  used: number;
+  limit: number | null;
+  /** null when unlimited. */
+  remaining: number | null;
 }
 
 /**
  * POST /api/transcripts   (multipart/form-data)
  *   fields (send BEFORE the file part): speakersExpected?: "1".."maxSpeakers", keepAudio?: "true"|"false",
- *                                        clientDurationSec?: number as string
+ *                                        clientDurationSec?: number as string,
+ *                                        quality?: "standard"|"high"|"ultra" (default "high";
+ *                                        429 QUOTA_EXCEEDED when the daily limit is used up)
  *   file part name: "file"
  * -> 201 CreateTranscriptResponse
  */
@@ -219,6 +265,7 @@ export const ERROR_CODES = [
   'TRANSCRIPTION_TIMEOUT',
   'NO_SPEECH',
   'CANNOT_RETRY',
+  'QUOTA_EXCEEDED',
   'UNAUTHORIZED',
   'INTERNAL',
 ] as const;

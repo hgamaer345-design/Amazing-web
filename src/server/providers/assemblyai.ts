@@ -16,7 +16,10 @@ export interface AssemblyAiOptions {
   apiKey: string;
   /** https://api.assemblyai.com or https://api.eu.assemblyai.com */
   baseUrl: string;
+  /** `speech_models` for High / Ultra High. */
   speechModels: string[];
+  /** `speech_models` for Standard. */
+  standardSpeechModels: string[];
   pollIntervalMs: number;
   /** Consecutive failed polls tolerated (network blips) before giving up on this attempt. */
   maxPollFailures?: number;
@@ -82,6 +85,11 @@ export function mapAssemblyAiTranscript(t: AaiTranscript): ProviderResult {
     segments,
     languageCode: t.language_code ?? null,
     durationSec: typeof t.audio_duration === 'number' ? t.audio_duration : null,
+    ...(t.words?.length
+      ? {
+          words: t.words.map((w) => ({ speaker: w.speaker ?? null, startMs: w.start, endMs: w.end, text: w.text })),
+        }
+      : {}),
   };
 }
 
@@ -145,7 +153,7 @@ export function createAssemblyAiProvider(opts: AssemblyAiOptions): Transcription
 
       const body: Record<string, unknown> = {
         audio_url: audioUrl,
-        speech_models: opts.speechModels,
+        speech_models: req.quality === 'standard' ? opts.standardSpeechModels : opts.speechModels,
         language_detection: true,
         speaker_labels: true,
       };

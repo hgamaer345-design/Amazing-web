@@ -6,6 +6,14 @@ import { buildDocument } from '../../server/segmentation';
 import { findDocumentProblems } from '../../shared/document';
 import { ERROR_MESSAGES } from '../../shared/errors';
 import { generateMockSegments } from '../../shared/mockTranscript';
+import {
+  DEFAULT_QUALITY_MODE,
+  DEFAULT_ULTRA_DAILY_LIMIT,
+  isQualityMode,
+  nextUtcMidnight,
+  qualityModeInfo,
+  utcDay,
+} from '../../shared/quality';
 import { makeId } from '../../shared/speakers';
 import {
   ACCEPTED_EXTENSIONS,
@@ -13,11 +21,14 @@ import {
   type AppConfigResponse,
   type ErrorCode,
   type ExportFormat,
+  type ModeUsage,
+  type QualityMode,
   type SaveDocumentRequest,
   type TranscriptDetail,
   type TranscriptDocument,
   type TranscriptStatus,
   type TranscriptSummary,
+  type UsageResponse,
 } from '../../shared/types';
 import { ApiError } from '../apiError';
 import { getDemoStore, type DemoRecord } from './store';
@@ -25,6 +36,12 @@ import { getDemoStore, type DemoRecord } from './store';
 const QUEUE_MS = 600;
 const SEPARATING_MS = 1200;
 const MAX_SPEAKERS = 10;
+const LIMITS: Record<QualityMode, number | null> = {
+  standard: null,
+  high: null,
+  ultra: DEFAULT_ULTRA_DAILY_LIMIT,
+};
+const QUALITY_TIME_FACTOR: Record<QualityMode, number> = { standard: 0.6, high: 1, ultra: 1.5 };
 
 export const DEMO_CONFIG: AppConfigResponse = {
   provider: 'mock',
@@ -34,14 +51,67 @@ export const DEMO_CONFIG: AppConfigResponse = {
   supportsSpeakerCount: true,
   maxSpeakers: MAX_SPEAKERS,
   demoMode: true,
+  qualityModes: qualityModeInfo(LIMITS),
+  defaultQuality: DEFAULT_QUALITY_MODE,
 };
+
+// Finished uses per UTC day and mode, kept in localStorage (the demo has no server to enforce
+// limits, so this is per browser). Jobs still "processing" are counted from the records.
+const usageKey = (day: string, mode: QualityMode) => `speaker-transcriber-demo:usage:${day}:${mode}`;
+
+function finishedUses(day: string, mode: QualityMode): number {
+  try {
+    return Number(localStorage.getItem(usageKey(day, mode))) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function recordFinishedUse(day: string, mode: QualityMode): void {
+  try {
+    localStorage.setItem(usageKey(day, mode), String(finishedUses(day, mode) + 1));
+  } catch {
+    // Storage unavailable: the limit just isn't remembered across reloads.
+  }
+}
+
+async function modeUsage(mode: QualityMode, day: string, now = Date.now()): Promise<ModeUsage> {
+  const limit = LIMITS[mode];
+  const records = await (await getDemoStore()).all();
+  const pending = records.filter(
+    (r) =>
+      r.quality === mode &&
+      r.quotaDay === day &&
+      !r.final &&
+      stageAt(r, now) !== 'done' &&
+      stageAt(r, now) !== 'error',
+  ).length;
+  const used = finishedUses(day, mode) + pending;
+  return { used, limit, remaining: limit == null ? null : Math.max(0, limit - used) };
+}
+
+export async function getUsage(): Promise<UsageResponse> {
+  const now = Date.now();
+  const day = utcDay(now);
+  const entries = await Promise.all(
+    (Object.keys(LIMITS) as QualityMode[]).map(
+      async (mode) => [mode, await modeUsage(mode, day, now)] as const,
+    ),
+  );
+  return {
+    day,
+    resetsAt: nextUtcMidnight(now),
+    modes: Object.fromEntries(entries) as UsageResponse['modes'],
+  };
+}
 
 function fail(code: ErrorCode, message: string = ERROR_MESSAGES[code], status = 400): never {
   throw new ApiError(code, message, status);
 }
 
-function simulatedTranscribeMs(durationSec: number | null): number {
-  return Math.min(12_000, Math.max(3_000, 2_500 + (durationSec ?? 60) * 40));
+function simulatedTranscribeMs(durationSec: number | null, quality: QualityMode): number {
+  const base = Math.min(12_000, Math.max(3_000, 2_500 + (durationSec ?? 60) * 40));
+  return Math.round(base * QUALITY_TIME_FACTOR[quality]);
 }
 
 function stageAt(rec: DemoRecord, now: number): TranscriptStatus {
@@ -84,6 +154,7 @@ async function settle(rec: DemoRecord, now = Date.now()): Promise<DemoRecord> {
     );
     rec.final = 'done';
     rec.document = { version: 1, speakers, rows };
+    if (LIMITS[rec.quality] != null) recordFinishedUse(rec.quotaDay, rec.quality);
     rec.languageCode = 'en';
     rec.completedAt = finishedAt;
   }
@@ -109,6 +180,7 @@ function toSummary(rec: DemoRecord, now = Date.now()): TranscriptSummary {
     durationSec: rec.durationSec,
     status: stageAt(rec, now),
     provider: 'mock',
+    quality: rec.quality,
     languageCode: rec.languageCode,
     speakersExpected: rec.speakersExpected,
     speakerCount: rec.document?.speakers.length ?? null,
@@ -173,7 +245,8 @@ export async function saveDocument(id: string, req: SaveDocumentRequest): Promis
   const rec = await load(id);
   if (rec.final !== 'done' || !rec.document) fail('NOT_READY', ERROR_MESSAGES.NOT_READY, 409);
   const problems = findDocumentProblems(req);
-  if (problems.length) throw new ApiError('INVALID_INPUT', ERROR_MESSAGES.INVALID_INPUT, 400, problems.join('; '));
+  if (problems.length)
+    throw new ApiError('INVALID_INPUT', ERROR_MESSAGES.INVALID_INPUT, 400, problems.join('; '));
   if (req.baseVersion !== rec.document.version) {
     throw new ApiError('VERSION_CONFLICT', ERROR_MESSAGES.VERSION_CONFLICT, 409, undefined, {
       document: rec.document,
@@ -219,7 +292,16 @@ export async function deleteAudio(id: string): Promise<TranscriptSummary> {
 export async function retryTranscript(id: string): Promise<TranscriptSummary> {
   const rec = await load(id);
   if (rec.final !== 'error' || !rec.hasAudio) fail('CANNOT_RETRY', ERROR_MESSAGES.CANNOT_RETRY, 409);
-  Object.assign(rec, { final: null, error: null, timelineStartMs: Date.now(), updatedAt: new Date().toISOString() });
+  const day = utcDay();
+  const usage = await modeUsage(rec.quality, day);
+  if (usage.remaining === 0) fail('QUOTA_EXCEEDED', ERROR_MESSAGES.QUOTA_EXCEEDED, 429);
+  Object.assign(rec, {
+    final: null,
+    error: null,
+    quotaDay: day,
+    timelineStartMs: Date.now(),
+    updatedAt: new Date().toISOString(),
+  });
   await (await getDemoStore()).put(rec);
   return toSummary(rec);
 }
@@ -259,7 +341,8 @@ export async function downloadExport(id: string, format: ExportFormat): Promise<
 
 /** Same container signatures the server sniffs for. */
 function looksLikeAudio(b: Uint8Array): boolean {
-  const ascii = (start: number, text: string) => [...text].every((ch, i) => b[start + i] === ch.charCodeAt(0));
+  const ascii = (start: number, text: string) =>
+    [...text].every((ch, i) => b[start + i] === ch.charCodeAt(0));
   return (
     ascii(0, 'ID3') ||
     (b[0] === 0xff && ((b[1] ?? 0) & 0xe0) === 0xe0) ||
@@ -275,6 +358,7 @@ export interface DemoUploadOptions {
   speakersExpected: number | null;
   keepAudio: boolean;
   clientDurationSec: number | null;
+  quality?: QualityMode;
 }
 
 /** Simulates an upload with progress events, then stores the job. */
@@ -298,8 +382,14 @@ export function uploadTranscript(
       if (s != null && (!Number.isInteger(s) || s < 1 || s > MAX_SPEAKERS)) {
         fail('INVALID_INPUT', `Number of speakers must be between 1 and ${MAX_SPEAKERS}.`);
       }
+      const quality = options.quality ?? DEFAULT_QUALITY_MODE;
+      if (!isQualityMode(quality)) fail('INVALID_INPUT', 'Unknown quality mode.');
       if (!looksLikeAudio(new Uint8Array(await file.slice(0, 16).arrayBuffer()))) {
         fail('UNSUPPORTED_FILE', undefined, 415);
+      }
+      // Checked before "uploading" so the user isn't kept waiting for a refusal.
+      if ((await modeUsage(quality, utcDay())).remaining === 0) {
+        fail('QUOTA_EXCEEDED', ERROR_MESSAGES.QUOTA_EXCEEDED, 429);
       }
 
       // Pretend to upload at ~25 MB/s, taking between 0.6 and 3 seconds.
@@ -321,23 +411,31 @@ export function uploadTranscript(
       const now = Date.now();
       const name = file.name.toLowerCase();
       const durationSec =
-        options.clientDurationSec != null && Number.isFinite(options.clientDurationSec) && options.clientDurationSec > 0
+        options.clientDurationSec != null &&
+        Number.isFinite(options.clientDurationSec) &&
+        options.clientDurationSec > 0
           ? options.clientDurationSec
           : null;
       const rec: DemoRecord = {
         id: makeId('demo'),
-        title: file.name.replace(/\.[^.]+$/, '').trim().slice(0, 200) || 'Untitled',
+        title:
+          file.name
+            .replace(/\.[^.]+$/, '')
+            .trim()
+            .slice(0, 200) || 'Untitled',
         originalFilename: file.name,
         mimeType: file.type || `audio/${ext}`,
         sizeBytes: file.size,
         durationSec,
         speakersExpected: s,
+        quality,
+        quotaDay: utcDay(now),
         keepAudio: options.keepAudio,
         hasAudio: false,
         createdAt: new Date(now).toISOString(),
         updatedAt: new Date(now).toISOString(),
         timelineStartMs: now,
-        transcribeMs: simulatedTranscribeMs(durationSec),
+        transcribeMs: simulatedTranscribeMs(durationSec, quality),
         outcome: name.includes('nospeech') ? 'nospeech' : name.includes('fail') ? 'fail' : 'ok',
         final: null,
         completedAt: null,

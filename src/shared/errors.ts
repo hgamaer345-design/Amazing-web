@@ -21,6 +21,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   TRANSCRIPTION_TIMEOUT: 'Transcription took too long and was stopped. Please try again.',
   NO_SPEECH: 'No speech was detected in this audio.',
   CANNOT_RETRY: 'This transcript cannot be retried because its audio is no longer stored. Upload the file again.',
+  QUOTA_EXCEEDED:
+    'You’ve used all of today’s free Ultra High transcriptions. Choose High or Standard, or try again tomorrow.',
   UNAUTHORIZED: 'You need to sign in to use this app.',
   INTERNAL: 'Something went wrong on the server. Please try again.',
 };
@@ -44,6 +46,7 @@ export const ERROR_HTTP_STATUS: Record<ErrorCode, number> = {
   TRANSCRIPTION_TIMEOUT: 504,
   NO_SPEECH: 422,
   CANNOT_RETRY: 409,
+  QUOTA_EXCEEDED: 429,
   UNAUTHORIZED: 401,
   INTERNAL: 500,
 };

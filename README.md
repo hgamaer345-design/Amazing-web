@@ -25,6 +25,8 @@ transcripts, run the full app with a speech-to-text API key ([Quick start](#quic
 - **Processing status** (Uploading → Transcribing → Separating speakers → Done) with an estimated time.
 - **Colour-coded speakers**, consistent across the table and the exports.
 - Optional **"Number of speakers (if known)"** hint before uploading.
+- **Quality modes** — Standard, High and Ultra High (see [Quality modes](#quality-modes)); Ultra High
+  is free for 3 uses per day.
 - **History** of past transcripts that you can reopen, rename or delete.
 - **Responsive** layout that works on phones.
 - Clear errors for unsupported or oversized files, failed transcription and "no speech detected".
@@ -65,6 +67,22 @@ npm run build
 npm start                     # http://localhost:3000
 ```
 
+## Quality modes
+
+Pick a mode before uploading:
+
+| Mode           | What it does                                                                                              | Limit               |
+| -------------- | --------------------------------------------------------------------------------------------------------- | ------------------- |
+| **Standard**   | A faster model (AssemblyAI `universal-2`, Deepgram `nova-2`). Good for clean audio with few speakers.     | Unlimited           |
+| **High**       | The most accurate general model (AssemblyAI `universal-3-5-pro`, Deepgram `nova-3`). The default.         | Unlimited           |
+| **Ultra High** | The most accurate model plus word-level speaker refinement: rows split exactly where the speaker changes. | 3 free uses per day |
+
+The Ultra High limit is per visitor (an anonymous key derived from the client's IP address, or the
+basic-auth user) and resets at midnight UTC. A job counts while it is processing and once it has
+finished; a failed job doesn't use up a free use, and deleting a finished transcript doesn't give one
+back. Change the limit with `ULTRA_DAILY_LIMIT` (`unlimited` removes it). In the GitHub Pages demo the
+limit is tracked in your browser.
+
 ## Choosing a provider
 
 | Provider       | How to enable                 | Notes                                                                                                                                                                                     |
@@ -92,10 +110,12 @@ real environment variables take precedence).
 | `TRANSCRIPTION_PROVIDER`                  | auto                            | `assemblyai`, `deepgram` or `mock`. Auto: AssemblyAI if its key is set, else Deepgram. |
 | `ASSEMBLYAI_API_KEY`                      | —                               | AssemblyAI API key.                                                                    |
 | `ASSEMBLYAI_BASE_URL`                     | `https://api.assemblyai.com`    | Use `https://api.eu.assemblyai.com` for EU data residency.                             |
-| `ASSEMBLYAI_SPEECH_MODELS`                | `universal-3-5-pro,universal-2` | Comma-separated `speech_models` priority list.                                         |
+| `ASSEMBLYAI_SPEECH_MODELS`                | `universal-3-5-pro,universal-2` | Comma-separated `speech_models` priority list (High, Ultra High).                      |
+| `ASSEMBLYAI_STANDARD_SPEECH_MODELS`       | `universal-2`                   | `speech_models` for the Standard mode.                                                 |
 | `DEEPGRAM_API_KEY`                        | —                               | Deepgram API key.                                                                      |
 | `DEEPGRAM_BASE_URL`                       | `https://api.deepgram.com`      | Deepgram API base URL.                                                                 |
-| `DEEPGRAM_MODEL`                          | `nova-3`                        | Deepgram model.                                                                        |
+| `DEEPGRAM_MODEL`                          | `nova-3`                        | Deepgram model (High, Ultra High).                                                     |
+| `DEEPGRAM_STANDARD_MODEL`                 | `nova-2`                        | Deepgram model for the Standard mode.                                                  |
 | `DEEPGRAM_DIARIZE_MODEL`                  | `latest`                        | Deepgram `diarize_model` (`latest`, `v1`, `v2`).                                       |
 | `MOCK_DELAY_MS`                           | `4000`                          | Simulated processing time for the mock provider.                                       |
 | `RUN_WORKER`                              | `true`                          | Run the job worker inside the web server process.                                      |
@@ -106,6 +126,7 @@ real environment variables take precedence).
 | `JOB_MAX_ATTEMPTS`                        | `3`                             | Attempts for temporary provider/network failures.                                      |
 | `JOB_TIMEOUT_MINUTES`                     | `180`                           | Maximum processing time per file.                                                      |
 | `DELETE_PROVIDER_DATA`                    | `true`                          | Ask the provider to delete its copy after processing.                                  |
+| `ULTRA_DAILY_LIMIT`                       | `3`                             | Free Ultra High uses per visitor per day (`unlimited` removes the limit).              |
 | `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` | —                               | Set both to password-protect the whole app (HTTP basic auth).                          |
 | `TRUST_PROXY`                             | `false`                         | Set to `true` behind a reverse proxy.                                                  |
 | `LOG_LEVEL`                               | `info`                          | `debug`, `info`, `warn` or `error`.                                                    |
@@ -165,20 +186,21 @@ the app shouldn't be public (anyone who can open it can see the history).
 
 ## API
 
-| Method & path                              | Purpose                                                               |
-| ------------------------------------------ | --------------------------------------------------------------------- |
-| `GET /api/config`                          | Provider status, upload limit, accepted formats.                      |
-| `POST /api/transcripts`                    | Upload (multipart: `file`, optional `speakersExpected`, `keepAudio`). |
-| `GET /api/transcripts`                     | History, newest first.                                                |
-| `GET /api/transcripts/:id`                 | Status, progress/ETA and (when done) the transcript.                  |
-| `PUT /api/transcripts/:id/document`        | Save edits (optimistic concurrency via `baseVersion`).                |
-| `PATCH /api/transcripts/:id`               | Rename.                                                               |
-| `DELETE /api/transcripts/:id`              | Delete the transcript and any stored audio.                           |
-| `DELETE /api/transcripts/:id/audio`        | Delete only the stored audio.                                         |
-| `POST /api/transcripts/:id/retry`          | Retry a failed job (when its audio is still stored).                  |
-| `GET /api/transcripts/:id/audio`           | Stream the audio (supports HTTP Range).                               |
-| `GET /api/transcripts/:id/export?format=…` | Download `csv`, `xlsx`, `txt`, `srt` or `docx`.                       |
-| `GET /api/health`                          | Health check.                                                         |
+| Method & path                              | Purpose                                                                          |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| `GET /api/config`                          | Provider status, upload limit, accepted formats, quality modes.                  |
+| `GET /api/usage`                           | Today's use of limited quality modes for this visitor.                           |
+| `POST /api/transcripts`                    | Upload (multipart: `file`, optional `speakersExpected`, `keepAudio`, `quality`). |
+| `GET /api/transcripts`                     | History, newest first.                                                           |
+| `GET /api/transcripts/:id`                 | Status, progress/ETA and (when done) the transcript.                             |
+| `PUT /api/transcripts/:id/document`        | Save edits (optimistic concurrency via `baseVersion`).                           |
+| `PATCH /api/transcripts/:id`               | Rename.                                                                          |
+| `DELETE /api/transcripts/:id`              | Delete the transcript and any stored audio.                                      |
+| `DELETE /api/transcripts/:id/audio`        | Delete only the stored audio.                                                    |
+| `POST /api/transcripts/:id/retry`          | Retry a failed job (when its audio is still stored).                             |
+| `GET /api/transcripts/:id/audio`           | Stream the audio (supports HTTP Range).                                          |
+| `GET /api/transcripts/:id/export?format=…` | Download `csv`, `xlsx`, `txt`, `srt` or `docx`.                                  |
+| `GET /api/health`                          | Health check.                                                                    |
 
 Request and response types are defined in [`src/shared/types.ts`](src/shared/types.ts).
 
