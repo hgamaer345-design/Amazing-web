@@ -9,9 +9,10 @@ import type {
   WorkerResponse,
 } from './protocol';
 
+/** UNREADABLE_AUDIO: the browser can't decode the file; DECODE_MEMORY: too long to decode here. */
 export class SpeechJobError extends Error {
   constructor(
-    readonly code: SpeechErrorCode | 'UNREADABLE_AUDIO',
+    readonly code: SpeechErrorCode | 'UNREADABLE_AUDIO' | 'DECODE_MEMORY',
     message: string,
   ) {
     super(message);
@@ -34,7 +35,15 @@ export async function decodeToMono16k(blob: Blob): Promise<Float32Array> {
     // An OfflineAudioContext at 16 kHz resamples while decoding.
     const ctx = new OfflineAudioContext(1, 1, 16000);
     buffer = await ctx.decodeAudioData(await blob.arrayBuffer());
-  } catch {
+  } catch (err) {
+    const name = err instanceof Error ? err.name : '';
+    // The whole file is decoded at once, so a very long recording can exhaust memory.
+    if (name === 'RangeError' || name === 'QuotaExceededError' || /memory|allocat/i.test(String(err))) {
+      throw new SpeechJobError('DECODE_MEMORY', `Not enough memory to decode the audio (${String(err)}).`);
+    }
+    if (name === 'NotReadableError' || name === 'NotFoundError') {
+      throw new SpeechJobError('FAILED', `The stored audio could not be read (${String(err)}).`);
+    }
     throw new SpeechJobError('UNREADABLE_AUDIO', 'This browser could not decode the audio file.');
   }
   if (buffer.numberOfChannels === 1) return buffer.getChannelData(0).slice();
@@ -59,9 +68,20 @@ export function createBrowserSpeechEngine(): SpeechEngine {
     run(audio, options, onProgress) {
       const jobId = makeId('job');
       let cancelled = false;
+      let settled = false;
+      /** The worker this job was sent to, once it has been. */
+      let sentTo: Worker | null = null;
       let reject: ((err: unknown) => void) | null = null;
 
-      const promise = new Promise<SpeechResult>((resolve, rej) => {
+      const promise = new Promise<SpeechResult>((resolveJob, rejectJob) => {
+        const resolve = (result: SpeechResult) => {
+          settled = true;
+          resolveJob(result);
+        };
+        const rej = (err: unknown) => {
+          settled = true;
+          rejectJob(err);
+        };
         reject = rej;
         (async () => {
           onProgress({ stage: 'loading', message: 'Reading the audio…', fraction: null });
@@ -86,9 +106,15 @@ export function createBrowserSpeechEngine(): SpeechEngine {
                 languageCode: msg.languageCode,
                 durationSec: msg.durationSec,
               });
-            } else {
-              rej(new SpeechJobError(msg.code, msg.message));
+              return;
             }
+            // After a failure ONNX Runtime can be left unusable (e.g. out of memory), so the next
+            // job gets a fresh worker; the models come back from the browser cache.
+            if (msg.code !== 'NO_SPEECH') {
+              w.terminate();
+              if (worker === w) worker = null;
+            }
+            rej(new SpeechJobError(msg.code, msg.message));
           };
           // An uncaught error (e.g. out of memory) leaves the worker unusable: start afresh next time.
           const onError = (e: ErrorEvent) => {
@@ -100,17 +126,21 @@ export function createBrowserSpeechEngine(): SpeechEngine {
           w.addEventListener('message', onMessage);
           w.addEventListener('error', onError);
           w.postMessage({ type: 'run', jobId, audio: samples, options }, [samples.buffer]);
+          sentTo = w;
         })().catch(rej);
       });
 
       return {
         promise,
         cancel() {
-          if (cancelled) return;
+          if (cancelled || settled) return;
           cancelled = true;
-          // Terminating is the only way to stop a running model; the next job starts a fresh worker.
-          worker?.terminate();
-          worker = null;
+          // Terminating is the only way to stop a running model; the next job starts a fresh
+          // worker. A job still decoding hasn't reached the worker, which stays warm.
+          if (sentTo) {
+            sentTo.terminate();
+            if (worker === sentTo) worker = null;
+          }
           reject?.(new SpeechJobError('FAILED', 'Cancelled.'));
         },
       };

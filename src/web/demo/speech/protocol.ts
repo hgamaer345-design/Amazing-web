@@ -30,7 +30,8 @@ export interface SpeechResult {
   durationSec: number;
 }
 
-export type SpeechErrorCode = 'NO_SPEECH' | 'MODEL_DOWNLOAD' | 'FAILED';
+/** MODEL_DOWNLOAD: a model couldn't be fetched; MODEL_LOAD: it couldn't be started (usually memory). */
+export type SpeechErrorCode = 'NO_SPEECH' | 'MODEL_DOWNLOAD' | 'MODEL_LOAD' | 'FAILED';
 
 export type WorkerRequest = { type: 'run'; jobId: string; audio: Float32Array; options: SpeechJobOptions };
 

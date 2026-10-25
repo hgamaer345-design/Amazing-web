@@ -1,5 +1,6 @@
 import { ApiError } from '../apiError';
 import * as demo from './demoApi';
+import { getDemoStore, type DemoRecord } from './store';
 import type { SpeechEngine } from './speech/engine';
 import type { SpeechJobOptions, SpeechProgress, SpeechResult } from './speech/protocol';
 
@@ -163,7 +164,13 @@ describe('demo API (in-browser transcription)', () => {
     expect(offline.error?.message).toMatch(/couldn’t be downloaded/);
 
     expect((await demo.retryTranscript(summary.id)).status).toBe('queued');
-    (await nextJob(3)).resolve({ ...RESULT, segments: [] });
+    (await nextJob(3)).reject(Object.assign(new Error('Aborted(OOM)'), { code: 'MODEL_LOAD' }));
+    const oom = await settled(summary.id);
+    expect(oom.error).toMatchObject({ code: 'TRANSCRIPTION_FAILED', detail: 'Aborted(OOM)' });
+    expect(oom.error?.message).toMatch(/ran out of memory/);
+
+    expect((await demo.retryTranscript(summary.id)).status).toBe('queued');
+    (await nextJob(4)).resolve({ ...RESULT, segments: [] });
     expect((await settled(summary.id)).error?.code).toBe('NO_SPEECH');
   });
 
@@ -212,6 +219,101 @@ describe('demo API (in-browser transcription)', () => {
     expect((await upload('e.wav', { quality: 'high' })).summary.quality).toBe('high');
     vi.setSystemTime(new Date('2026-10-26T00:00:01Z'));
     expect((await demo.getUsage()).modes.ultra.remaining).toBe(3);
+  });
+
+  it('runs one job at a time however uploads, retries and deletes interleave', async () => {
+    const uploads = await Promise.all(['a.wav', 'b.wav', 'c.wav'].map((name) => upload(name)));
+    const first = await nextJob(1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(jobs).toHaveLength(1);
+    // Deleting a queued file right away means it is never transcribed.
+    await demo.deleteTranscript(uploads[1]!.summary.id);
+    first.resolve(RESULT);
+    (await nextJob(2)).resolve(RESULT);
+    expect((await settled(uploads[2]!.summary.id)).status).toBe('done');
+    expect(jobs).toHaveLength(2);
+    await expect(demo.getTranscript(uploads[1]!.summary.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('a delete just after uploading never brings the transcript back', async () => {
+    const { summary } = await upload('quick.wav');
+    await demo.deleteTranscript(summary.id);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(jobs.every((j) => j.cancelled)).toBe(true);
+    expect(await demo.listTranscripts()).toEqual([]);
+  });
+
+  it('restarts a job cut short by a reload once, then stops instead of crashing again', async () => {
+    const store = await getDemoStore();
+    const now = new Date().toISOString();
+    const interrupted = (id: string, attempts: number): DemoRecord => ({
+      id,
+      title: id,
+      originalFilename: `${id}.wav`,
+      mimeType: 'audio/wav',
+      sizeBytes: 64,
+      durationSec: 30,
+      speakersExpected: null,
+      quality: 'high',
+      quotaDay: now.slice(0, 10),
+      keepAudio: false,
+      hasAudio: true,
+      createdAt: now,
+      updatedAt: now,
+      status: 'transcribing',
+      startedAt: now,
+      completedAt: null,
+      attempts,
+      runId: 'run_gone',
+      languageCode: null,
+      error: null,
+      document: null,
+    });
+    await store.put(interrupted('crashed-twice', 2));
+    await store.put(interrupted('crashed-once', 1));
+    await store.putAudio('crashed-twice', wavFile('a.wav'));
+    await store.putAudio('crashed-once', wavFile('b.wav'));
+    demo.resetDemoStateForTests(); // as after a reload
+
+    await demo.listTranscripts();
+    const gaveUp = await settled('crashed-twice');
+    expect(gaveUp.error?.message).toMatch(/ran out of memory/);
+    expect(gaveUp.audioAvailable).toBe(true); // Retry still possible
+    (await nextJob(1)).resolve(RESULT);
+    expect((await settled('crashed-once')).status).toBe('done');
+  });
+
+  it('reads records saved by older demo versions', async () => {
+    const store = await getDemoStore();
+    const now = new Date().toISOString();
+    await store.put({
+      id: 'legacy',
+      title: 'Old one',
+      originalFilename: 'old.wav',
+      mimeType: 'audio/wav',
+      sizeBytes: 64,
+      durationSec: 30,
+      speakersExpected: null,
+      keepAudio: false,
+      createdAt: now,
+      updatedAt: now,
+      completedAt: now,
+      languageCode: 'en',
+      error: null,
+      document: { version: 1, speakers: [], rows: [] },
+      final: 'done',
+    } as unknown as DemoRecord);
+    const [legacy] = await demo.listTranscripts();
+    expect(legacy).toMatchObject({ id: 'legacy', status: 'done', quality: 'high', audioAvailable: false });
+  });
+
+  it('refuses recordings longer than the in-browser limit', async () => {
+    const tooLong = demo.uploadTranscript(
+      wavFile('lecture.wav'),
+      { speakersExpected: null, keepAudio: false, clientDurationSec: demo.MAX_DEMO_DURATION_SEC + 1 },
+      () => {},
+    );
+    await expect(tooLong.promise).rejects.toMatchObject({ code: 'FILE_TOO_LARGE', status: 413 });
   });
 
   it('rejects unsupported files and can be cancelled', async () => {

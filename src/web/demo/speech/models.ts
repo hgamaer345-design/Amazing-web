@@ -3,11 +3,12 @@
 // is cached by the browser after the first run.
 import { env, pipeline, Tensor, type AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers';
 import * as ort from 'onnxruntime-web/webgpu';
-import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.mjs?url';
-import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
+import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import type { QualityMode } from '../../../shared/types';
 import type { DiarizationModels } from './diarize';
 import { computeFbank } from './fbank';
+import { cleanTranscript } from './text';
 
 /** Whisper model per quality mode (multilingual; 8-bit quantized for WebAssembly). */
 export const WHISPER_MODELS: Record<QualityMode, { id: string; label: string; approxMB: number }> = {
@@ -23,14 +24,18 @@ export const SPEAKER_MODEL_FILES = {
 } as const;
 
 /**
- * Speaker-analysis settings per mode: hop between 10 s analysis windows and the most speech
- * used per voice fingerprint. Finer settings separate quick exchanges better but cost more.
+ * Speaker-analysis settings: hop between the 10 s analysis windows, spacing of the windows that
+ * get their own voice fingerprint (the others are matched to them), least clean speech per
+ * fingerprint and the most speech used for one. The same for every quality mode: on test
+ * conversations a finer hop or longer fingerprints were slower and found the wrong number of
+ * speakers more often (see docs/ARCHITECTURE.md).
  */
-export const DIARIZATION_SETTINGS: Record<QualityMode, { windowShiftSec: number; embedSeconds: number }> = {
-  standard: { windowShiftSec: 2, embedSeconds: 2 },
-  high: { windowShiftSec: 1, embedSeconds: 2 },
-  ultra: { windowShiftSec: 1, embedSeconds: 5 },
-};
+export const DIARIZATION_SETTINGS = {
+  windowShiftSec: 2,
+  embedStrideSec: 5,
+  minEmbedSpeechSec: 1,
+  embedSeconds: 2,
+} as const;
 
 const CACHE_NAME = 'speaker-transcriber-models-v1';
 let configured = false;
@@ -51,6 +56,34 @@ export function configureRuntime(): void {
   // transformers.js shares this ONNX Runtime instance (and so these settings); Whisper comes from
   // the hub, never from this site's own /models/ folder.
   env.allowLocalModels = false;
+  // ONNX Runtime is already set up from the files above; don't let transformers.js fetch and keep
+  // a second copy of the WebAssembly binary.
+  env.useWasmCache = false;
+}
+
+/** A model that couldn't be downloaded ("download") or couldn't be started, e.g. out of memory ("load"). */
+export class ModelLoadError extends Error {
+  constructor(
+    readonly kind: 'download' | 'load',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ModelLoadError';
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** transformers.js reports failed downloads as fetch TypeErrors or HTTP/"locate file" errors. */
+function isDownloadError(err: unknown): boolean {
+  return (
+    err instanceof TypeError ||
+    /fetch|network|download|could not locate|status|unauthorized|forbidden|not found|\b40\d\b|\b50\d\b/i.test(
+      errorMessage(err),
+    )
+  );
 }
 
 export type ByteProgress = (loaded: number, total: number) => void;
@@ -111,12 +144,18 @@ export function loadSpeakerModels(onProgress: ByteProgress) {
         progress.emb = [l, t];
         report();
       }),
-    ]);
+    ]).catch((err: unknown) => {
+      throw new ModelLoadError('download', errorMessage(err));
+    });
     const options: ort.InferenceSession.SessionOptions = { executionProviders: ['wasm'] };
-    return {
-      segmentation: await ort.InferenceSession.create(segBytes, options),
-      embedding: await ort.InferenceSession.create(embBytes, options),
-    };
+    try {
+      return {
+        segmentation: await ort.InferenceSession.create(segBytes, options),
+        embedding: await ort.InferenceSession.create(embBytes, options),
+      };
+    } catch (err) {
+      throw new ModelLoadError('load', errorMessage(err));
+    }
   })().catch((err: unknown) => {
     speakerSessions = null;
     throw err;
@@ -172,13 +211,17 @@ export function loadWhisper(
   const asr = (async () => {
     // Free the previous model's memory before loading another size.
     if (previous) await (await previous.asr.catch(() => null))?.dispose();
-    return (await pipeline('automatic-speech-recognition', WHISPER_MODELS[mode].id, {
-      dtype: 'q8',
-      device: 'wasm',
-      progress_callback: (info) => {
-        if (info.status === 'progress_total') onProgress(info.loaded, info.total);
-      },
-    })) as AutomaticSpeechRecognitionPipeline;
+    try {
+      return (await pipeline('automatic-speech-recognition', WHISPER_MODELS[mode].id, {
+        dtype: 'q8',
+        device: 'wasm',
+        progress_callback: (info) => {
+          if (info.status === 'progress_total') onProgress(info.loaded, info.total);
+        },
+      })) as AutomaticSpeechRecognitionPipeline;
+    } catch (err) {
+      throw new ModelLoadError(isDownloadError(err) ? 'download' : 'load', errorMessage(err));
+    }
   })();
   whisper = { mode, asr };
   asr.catch(() => {
@@ -234,5 +277,5 @@ export async function transcribeClip(
     ...(long ? { chunk_length_s: 30, stride_length_s: 5 } : {}),
   });
   const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : out.text;
-  return text.replace(/\s+/g, ' ').trim();
+  return cleanTranscript(text, clip.length / 16000);
 }

@@ -1,4 +1,4 @@
-import { planTurns, speechSample } from './turns';
+import { planTurns, speechSample, splitLongTurns } from './turns';
 
 const seg = (start: number, end: number, speaker: number) => ({ start, end, speaker });
 
@@ -41,5 +41,45 @@ describe('speechSample', () => {
       1,
     );
     expect(Array.from(out)).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 50, 51, 52, 53, 54]);
+  });
+});
+
+describe('planTurns with overlapping speech', () => {
+  it("drops a brief segment buried in another speaker's speech and joins around it", () => {
+    const turns = planTurns(
+      [seg(1, 9, 0), seg(4.2, 4.9, 1), seg(9.4, 12, 0), seg(12.5, 13.2, 1)],
+      16000 * 20,
+      {
+        padding: 0,
+      },
+    );
+    // 4.2–4.9 lies inside speaker 0's turn; 12.5–13.2 is short but on its own, so it stays.
+    expect(turns.map((t) => [t.speaker, t.start / 16000, t.end / 16000])).toEqual([
+      [0, 1, 12],
+      [1, 12.5, 13.2],
+    ]);
+  });
+});
+
+describe('splitLongTurns', () => {
+  it('cuts long turns at the quietest point before each limit and leaves short ones alone', () => {
+    const sr = 100; // small rate keeps the test readable
+    const audio = new Float32Array(100 * sr).fill(0.5);
+    audio.fill(0, 25 * sr, 25 * sr + 20); // a pause at 25 s
+    audio.fill(0, 51 * sr, 51 * sr + 20); // and at 51 s
+    const turns = splitLongTurns(
+      audio,
+      [
+        { speaker: 0, start: 0, end: 70 * sr },
+        { speaker: 1, start: 70 * sr, end: 80 * sr },
+      ],
+      { sampleRate: sr, maxSeconds: 28, searchSeconds: 4 },
+    );
+    expect(turns.map((t) => [t.speaker, t.start / sr, t.end / sr])).toEqual([
+      [0, 0, 25.02],
+      [0, 25.02, 51.02],
+      [0, 51.02, 70],
+      [1, 70, 80],
+    ]);
   });
 });

@@ -37,6 +37,8 @@ import type { SpeechProgress } from './speech/protocol';
 import { getDemoStore, type DemoRecord } from './store';
 
 const MAX_SPEAKERS = 10;
+/** Longest recording the in-browser engine takes: the whole file is decoded in memory at once. */
+export const MAX_DEMO_DURATION_SEC = 90 * 60;
 const LIMITS: Record<QualityMode, number | null> = {
   standard: null,
   high: null,
@@ -48,18 +50,18 @@ const BROWSER_MODES: Record<QualityMode, Pick<QualityModeInfo, 'tagline' | 'desc
   standard: {
     tagline: 'Fast · Whisper Tiny (~40 MB download)',
     description:
-      'The smallest Whisper model and quicker speaker analysis. Good for clear recordings with one or two speakers.',
+      'The smallest speech model: quickest, and good for clear recordings. Speaker separation is the same in every mode.',
   },
   high: {
     tagline: 'Accurate · Whisper Base (~80 MB download)',
     description:
-      'A larger Whisper model and fine-grained speaker analysis. The best balance for most recordings.',
+      'A larger speech model that makes fewer mistakes. The best balance of speed and accuracy for most recordings.',
   },
   ultra: {
     tagline: 'Most accurate · Whisper Small (~250 MB download)',
     description:
-      'The most accurate model and the most detailed speaker analysis, for difficult audio and fast exchanges. ' +
-      'Slower: best on a computer.',
+      'The most accurate speech model, for accents, noise and fast talk. Several times slower than High: ' +
+      'best on a computer.',
   },
 };
 
@@ -81,6 +83,14 @@ export const DEMO_CONFIG: AppConfigResponse = {
 
 let engineOverride: SpeechEngine | null = null;
 let enginePromise: Promise<SpeechEngine> | null = null;
+
+/** Tests: forget this tab's in-memory state, as if the page had been reloaded. */
+export function resetDemoStateForTests(): void {
+  live.clear();
+  sessionAudio.clear();
+  current = null;
+  started = false;
+}
 
 /** Tests swap in a fake engine. */
 export function setSpeechEngineForTests(engine: SpeechEngine | null): void {
@@ -156,56 +166,106 @@ interface LiveJob {
   progress: SpeechProgress;
   /** When the measurable part (speaker analysis onwards) began, for the ETA. */
   measuredSince: number | null;
-  cancel(): void;
+  cancelled: boolean;
+  /** Stops the engine once it is running. */
+  stop: (() => void) | null;
 }
 
+/** A job interrupted this many times (e.g. the tab ran out of memory) is not restarted again. */
+const MAX_ATTEMPTS = 2;
 const live = new Map<string, LiveJob>();
 /** Uploaded files kept in memory in case storing them in IndexedDB failed (quota). */
 const sessionAudio = new Map<string, Blob>();
-/** Id of the record being processed (set as soon as it is picked from the queue). */
-let running: string | null = null;
-let resumed = false;
+/** Id of the record this tab is processing. */
+let current: string | null = null;
+let pumping = false;
+let pumpAgain = false;
+let started = false;
 
-/** Jobs left mid-way by a reload are queued again (their audio is still stored). */
-async function resumeInterrupted(): Promise<void> {
-  if (resumed) return;
-  resumed = true;
-  const store = await getDemoStore();
-  for (const rec of await store.all()) {
-    if (!ACTIVE.has(rec.status) || live.has(rec.id)) continue;
-    if (rec.hasAudio) {
-      Object.assign(rec, { status: 'queued', startedAt: null });
-    } else {
-      Object.assign(rec, {
-        status: 'error',
-        error: {
-          code: 'TRANSCRIPTION_FAILED',
-          message: 'Processing was interrupted when the page was closed. Upload the file again.',
-        },
-      });
+/** Tells other tabs about deletions, so a tab processing that transcript stops. */
+const channel =
+  typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('speaker-transcriber-demo') : null;
+channel?.addEventListener('message', (e: MessageEvent<{ type?: string; id?: string }>) => {
+  if (e.data?.type === 'deleted' && e.data.id) cancelLive(e.data.id);
+});
+
+function cancelLive(id: string): void {
+  const job = live.get(id);
+  if (!job) return;
+  job.cancelled = true;
+  job.stop?.();
+}
+
+/** Only one tab processes jobs; the others wait for this lock (where the browser supports it). */
+function withQueueLock(fn: () => Promise<void>): Promise<void> {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  return locks ? locks.request('speaker-transcriber-demo:queue', fn) : fn();
+}
+
+/** Starts processing queued jobs, in upload order, one at a time. */
+function kick(): void {
+  pumpAgain = true;
+  if (pumping) return;
+  pumping = true;
+  void withQueueLock(async () => {
+    while (pumpAgain) {
+      pumpAgain = false;
+      await recoverInterrupted();
+      for (let next = await nextQueued(); next; next = await nextQueued()) await processJob(next);
     }
-    await store.put(rec);
-  }
+  })
+    .catch(() => {})
+    .finally(() => {
+      pumping = false;
+      if (pumpAgain) kick();
+    });
+}
+
+/** Called by every API entry point: picks up work left by an earlier visit. */
+function ensureStarted(): void {
+  if (started) return;
+  started = true;
   kick();
 }
 
-function kick(): void {
-  void pump();
-}
-
-async function pump(): Promise<void> {
-  if (running) return;
-  const store = await getDemoStore();
-  const next = (await store.all())
+async function nextQueued(): Promise<DemoRecord | undefined> {
+  const records = await (await getDemoStore()).all();
+  return records
     .filter((r) => r.status === 'queued')
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
-  if (!next) return;
-  running = next.id;
-  try {
-    await processJob(next);
-  } finally {
-    running = null;
-    kick();
+}
+
+/**
+ * Jobs still marked as processing that this tab isn't running were cut short (the page was
+ * closed or crashed; while we hold the queue lock no other tab can be running them). They are
+ * queued again, unless that already happened too often or their audio is gone.
+ */
+async function recoverInterrupted(): Promise<void> {
+  const store = await getDemoStore();
+  for (const rec of await store.all()) {
+    if (!ACTIVE.has(rec.status) || rec.status === 'queued' || live.has(rec.id)) continue;
+    await store.update(rec.id, (r) => {
+      if (!ACTIVE.has(r.status) || r.status === 'queued') return false;
+      r.updatedAt = new Date().toISOString();
+      r.runId = null;
+      if (!r.hasAudio && !sessionAudio.has(r.id)) {
+        r.status = 'error';
+        r.error = jobError(
+          'TRANSCRIPTION_FAILED',
+          'Processing was interrupted when the page was closed. Upload the file again.',
+        );
+      } else if ((r.attempts ?? 0) >= MAX_ATTEMPTS) {
+        r.status = 'error';
+        r.error = jobError(
+          'TRANSCRIPTION_FAILED',
+          'The page closed or ran out of memory while transcribing this file. Try again with a lower ' +
+            'quality or a shorter recording.',
+        );
+      } else {
+        r.status = 'queued';
+        r.startedAt = null;
+      }
+    });
   }
 }
 
@@ -213,96 +273,139 @@ function jobError(code: ErrorCode, message?: string, detail?: string): Transcrip
   return { code, message: message ?? ERROR_MESSAGES[code], ...(detail ? { detail } : {}) };
 }
 
-async function finish(id: string, changes: Partial<DemoRecord>): Promise<void> {
+/** Records the outcome of run `runId`, unless the record was deleted or another run took over. */
+async function finish(id: string, runId: string, changes: Partial<DemoRecord>): Promise<boolean> {
   const store = await getDemoStore();
-  // Re-read: the title may have been edited, or the record deleted, while processing.
-  const rec = await store.get(id);
-  if (!rec) return;
-  Object.assign(rec, changes, { updatedAt: new Date().toISOString() });
-  // As on the server, audio is dropped once the transcript is ready unless the user kept it.
-  // After a failure it stays (on this device) so Retry works.
-  if (rec.status === 'done' && !rec.keepAudio && rec.hasAudio) {
-    rec.hasAudio = false;
-    await store.deleteAudio(rec.id);
-    sessionAudio.delete(rec.id);
+  let dropAudio = false;
+  const saved = await store.update(id, (rec) => {
+    if (rec.runId !== runId || live.get(id)?.cancelled) return false;
+    Object.assign(rec, changes, { updatedAt: new Date().toISOString(), runId: null });
+    // As on the server, audio is dropped once the transcript is ready unless the user kept it.
+    // After a failure it stays (on this device) so Retry works.
+    if (rec.status === 'done' && !rec.keepAudio) {
+      dropAudio = true;
+      rec.hasAudio = false;
+    }
+  });
+  if (dropAudio) {
+    await store.deleteAudio(id);
+    sessionAudio.delete(id);
+    forgetAudioUrl(id);
   }
-  await store.put(rec);
+  return saved !== undefined;
 }
 
-async function processJob(rec: DemoRecord): Promise<void> {
-  const store = await getDemoStore();
-  const audio = (await store.getAudio(rec.id)) ?? sessionAudio.get(rec.id);
-  if (!audio) {
-    await finish(rec.id, {
-      status: 'error',
-      error: jobError(
-        'TRANSCRIPTION_FAILED',
-        'The audio for this transcript is no longer stored. Upload it again.',
-      ),
-    });
-    return;
-  }
-  Object.assign(rec, { status: 'transcribing', startedAt: new Date().toISOString(), error: null });
-  await store.put(rec);
-
-  let cancelled = false;
+async function processJob(picked: DemoRecord): Promise<void> {
+  const id = picked.id;
+  // Registered before any await so a delete from now on cancels this job.
   const entry: LiveJob = {
     progress: { stage: 'loading', message: 'Starting…', fraction: null },
     measuredSince: null,
-    cancel: () => {
-      cancelled = true; // Deleted before the engine started.
-    },
+    cancelled: false,
+    stop: null,
   };
-  live.set(rec.id, entry);
-
+  live.set(id, entry);
+  current = id;
   try {
-    const engine = await speechEngine();
-    if (cancelled) return;
-    const job = engine.run(
-      audio,
-      { quality: rec.quality, speakersExpected: rec.speakersExpected },
-      (progress) => {
-        entry.progress = progress;
-        if (progress.stage !== 'loading' && entry.measuredSince == null) entry.measuredSince = Date.now();
-      },
-    );
-    entry.cancel = job.cancel;
-    const result = await job.promise;
-    const { speakers, rows } = buildDocument(result.segments);
-    if (rows.length === 0) {
-      await finish(rec.id, { status: 'error', error: jobError('NO_SPEECH') });
+    const store = await getDemoStore();
+    const runId = makeId('run');
+    const claimed = await store.update(id, (rec) => {
+      if (rec.status !== 'queued' || entry.cancelled) return false;
+      rec.status = 'transcribing';
+      rec.startedAt = new Date().toISOString();
+      rec.updatedAt = rec.startedAt;
+      rec.error = null;
+      rec.runId = runId;
+      rec.attempts = (rec.attempts ?? 0) + 1;
+    });
+    if (!claimed) return;
+
+    const audio = (await store.getAudio(id).catch(() => undefined)) ?? sessionAudio.get(id);
+    if (!audio) {
+      await finish(id, runId, {
+        status: 'error',
+        hasAudio: false,
+        error: jobError(
+          'TRANSCRIPTION_FAILED',
+          'The audio for this transcript is no longer stored. Upload it again.',
+        ),
+      });
       return;
     }
-    if (LIMITS[rec.quality] != null && (await store.get(rec.id)))
-      recordFinishedUse(rec.quotaDay, rec.quality);
-    await finish(rec.id, {
-      status: 'done',
-      document: { version: 1, speakers, rows },
-      languageCode: result.languageCode,
-      durationSec: rec.durationSec ?? result.durationSec,
-      completedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    const e = err as { code?: string; message?: string };
-    const error =
-      e.code === 'NO_SPEECH'
-        ? jobError('NO_SPEECH')
-        : e.code === 'UNREADABLE_AUDIO'
-          ? jobError('UNREADABLE_AUDIO')
-          : e.code === 'MODEL_DOWNLOAD'
-            ? jobError(
-                'TRANSCRIPTION_FAILED',
-                'The speech models couldn’t be downloaded. Check your internet connection and try again.',
-                e.message,
-              )
-            : jobError(
-                'TRANSCRIPTION_FAILED',
-                'Transcription failed in this browser. Please try again, or try a smaller quality setting.',
-                e.message,
-              );
-    await finish(rec.id, { status: 'error', error });
+
+    try {
+      const engine = await speechEngine();
+      if (entry.cancelled) return;
+      const job = engine.run(
+        audio,
+        { quality: claimed.quality, speakersExpected: claimed.speakersExpected },
+        (progress) => {
+          entry.progress = progress;
+          if (progress.stage !== 'loading' && entry.measuredSince == null) entry.measuredSince = Date.now();
+        },
+      );
+      entry.stop = job.cancel;
+      const result = await job.promise;
+      const { speakers, rows } = buildDocument(result.segments);
+      if (rows.length === 0) {
+        await finish(id, runId, { status: 'error', error: jobError('NO_SPEECH') });
+        return;
+      }
+      // Count the use before the record turns "done" so the daily limit never undercounts.
+      const counted = LIMITS[claimed.quality] != null && (await store.get(id))?.runId === runId;
+      if (counted) recordFinishedUse(claimed.quotaDay, claimed.quality);
+      await finish(id, runId, {
+        status: 'done',
+        document: { version: 1, speakers, rows },
+        languageCode: result.languageCode,
+        durationSec: claimed.durationSec ?? result.durationSec,
+        completedAt: new Date().toISOString(),
+        attempts: 0,
+      });
+    } catch (err) {
+      if (entry.cancelled) return;
+      const e = err as { code?: string; message?: string };
+      await finish(id, runId, { status: 'error', error: speechError(e.code, e.message) });
+    }
   } finally {
-    live.delete(rec.id);
+    live.delete(id);
+    current = null;
+  }
+}
+
+/** What to tell the user for each way the in-browser engine can fail. */
+function speechError(code: string | undefined, detail: string | undefined): TranscriptError {
+  switch (code) {
+    case 'NO_SPEECH':
+      return jobError('NO_SPEECH');
+    case 'UNREADABLE_AUDIO':
+      return jobError('UNREADABLE_AUDIO');
+    case 'MODEL_DOWNLOAD':
+      return jobError(
+        'TRANSCRIPTION_FAILED',
+        'The speech models couldn’t be downloaded. Check your internet connection and try again.',
+        detail,
+      );
+    case 'DECODE_MEMORY':
+      return jobError(
+        'TRANSCRIPTION_FAILED',
+        `This recording is too long to decode on this device. Try a shorter recording, or the full app for ` +
+          `long files.`,
+        detail,
+      );
+    case 'MODEL_LOAD':
+      return jobError(
+        'TRANSCRIPTION_FAILED',
+        'This device couldn’t start the speech model, usually because it ran out of memory. Close other tabs ' +
+          'or choose a lower quality, then try again.',
+        detail,
+      );
+    default:
+      return jobError(
+        'TRANSCRIPTION_FAILED',
+        'Transcription failed in this browser. Please try again, or try a lower quality setting.',
+        detail,
+      );
   }
 }
 
@@ -318,8 +421,14 @@ function forgetAudioUrl(id: string): void {
   audioUrls.delete(id);
 }
 
-/** Older demo versions stored a simulated timeline; treat those records as finished or failed. */
+/**
+ * Records from older demo versions: the simulated one stored a timeline instead of a status, and
+ * the very first had no quality mode.
+ */
 function normalize(rec: DemoRecord): DemoRecord {
+  if (!isQualityMode(rec.quality)) rec.quality = DEFAULT_QUALITY_MODE;
+  rec.quotaDay ??= rec.createdAt.slice(0, 10);
+  rec.hasAudio ??= false;
   if (rec.status) return rec;
   const legacy = rec as DemoRecord & { final?: 'done' | 'error' | null };
   rec.status = legacy.final === 'done' && rec.document ? 'done' : 'error';
@@ -349,7 +458,7 @@ function toSummary(rec: DemoRecord): TranscriptSummary {
     speakerCount: rec.document?.speakers.length ?? null,
     rowCount: rec.document?.rows.length ?? null,
     keepAudio: rec.keepAudio,
-    audioAvailable: rec.hasAudio,
+    audioAvailable: rec.hasAudio || sessionAudio.has(rec.id),
     error: rec.status === 'error' ? rec.error : null,
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
@@ -371,8 +480,8 @@ async function toDetail(rec: DemoRecord): Promise<TranscriptDetail> {
   let queuePosition: number | null = null;
   if (summary.status === 'queued') {
     const queued = (await (await getDemoStore()).all()).filter((r) => r.status === 'queued');
-    const ahead = queued.filter((r) => r.createdAt < rec.createdAt && r.id !== running).length;
-    queuePosition = ahead + 1 + (running && running !== rec.id ? 1 : 0);
+    const ahead = queued.filter((r) => r.createdAt < rec.createdAt && r.id !== current).length;
+    queuePosition = ahead + 1 + (current && current !== rec.id ? 1 : 0);
   }
   return {
     ...summary,
@@ -391,7 +500,7 @@ async function toDetail(rec: DemoRecord): Promise<TranscriptDetail> {
 }
 
 async function load(id: string): Promise<DemoRecord> {
-  await resumeInterrupted();
+  ensureStarted();
   const rec = await (await getDemoStore()).get(id);
   if (!rec) fail('NOT_FOUND', ERROR_MESSAGES.NOT_FOUND, 404);
   return normalize(rec);
@@ -406,7 +515,7 @@ export async function getConfig(): Promise<AppConfigResponse> {
 }
 
 export async function listTranscripts(): Promise<TranscriptSummary[]> {
-  await resumeInterrupted();
+  ensureStarted();
   const store = await getDemoStore();
   return (await store.all())
     .map(normalize)
@@ -416,7 +525,7 @@ export async function listTranscripts(): Promise<TranscriptSummary[]> {
 
 export async function getTranscript(id: string): Promise<TranscriptDetail> {
   const rec = await load(id);
-  if (rec.hasAudio && !audioUrls.has(id)) {
+  if ((rec.hasAudio || sessionAudio.has(id)) && !audioUrls.has(id)) {
     const blob = (await (await getDemoStore()).getAudio(id)) ?? sessionAudio.get(id);
     if (blob) audioUrls.set(id, URL.createObjectURL(blob));
   }
@@ -434,10 +543,22 @@ export async function saveDocument(id: string, req: SaveDocumentRequest): Promis
       document: rec.document,
     });
   }
-  rec.document = { version: rec.document.version + 1, speakers: req.speakers, rows: req.rows };
-  rec.updatedAt = new Date().toISOString();
-  await (await getDemoStore()).put(rec);
-  return rec.document;
+  const document = { version: rec.document.version + 1, speakers: req.speakers, rows: req.rows };
+  const saved = await (
+    await getDemoStore()
+  ).update(id, (r) => {
+    if (r.document?.version !== req.baseVersion) return false;
+    r.document = document;
+    r.updatedAt = new Date().toISOString();
+  });
+  if (!saved) {
+    const latest = await (await getDemoStore()).get(id);
+    if (!latest) fail('NOT_FOUND', ERROR_MESSAGES.NOT_FOUND, 404);
+    throw new ApiError('VERSION_CONFLICT', ERROR_MESSAGES.VERSION_CONFLICT, 409, undefined, {
+      document: latest.document,
+    });
+  }
+  return document;
 }
 
 export async function updateTranscript(id: string, changes: { title?: string }): Promise<TranscriptSummary> {
@@ -445,9 +566,14 @@ export async function updateTranscript(id: string, changes: { title?: string }):
   if (changes.title !== undefined) {
     const title = changes.title.trim();
     if (!title || title.length > 200) fail('INVALID_INPUT', 'The title must be 1–200 characters.');
-    rec.title = title;
-    rec.updatedAt = new Date().toISOString();
-    await (await getDemoStore()).put(rec);
+    const saved = await (
+      await getDemoStore()
+    ).update(id, (r) => {
+      r.title = title;
+      r.updatedAt = new Date().toISOString();
+    });
+    if (!saved) fail('NOT_FOUND', ERROR_MESSAGES.NOT_FOUND, 404);
+    return toSummary(normalize(saved));
   }
   return toSummary(rec);
 }
@@ -455,9 +581,11 @@ export async function updateTranscript(id: string, changes: { title?: string }):
 export async function deleteTranscript(id: string): Promise<void> {
   const store = await getDemoStore();
   if (!(await store.get(id))) fail('NOT_FOUND', ERROR_MESSAGES.NOT_FOUND, 404);
+  // Stop processing first (here or in another tab), so nothing writes the record back.
+  cancelLive(id);
+  channel?.postMessage({ type: 'deleted', id });
   await store.delete(id);
   await store.deleteAudio(id);
-  live.get(id)?.cancel();
   sessionAudio.delete(id);
   forgetAudioUrl(id);
 }
@@ -468,29 +596,38 @@ export async function deleteAudio(id: string): Promise<TranscriptSummary> {
   await store.deleteAudio(id);
   sessionAudio.delete(id);
   forgetAudioUrl(id);
-  rec.hasAudio = false;
-  rec.updatedAt = new Date().toISOString();
-  await store.put(rec);
-  return toSummary(rec);
+  const saved = await store.update(id, (r) => {
+    r.hasAudio = false;
+    r.updatedAt = new Date().toISOString();
+  });
+  return toSummary(normalize(saved ?? { ...rec, hasAudio: false }));
 }
 
 export async function retryTranscript(id: string): Promise<TranscriptSummary> {
   const rec = await load(id);
-  if (rec.status !== 'error' || !rec.hasAudio) fail('CANNOT_RETRY', ERROR_MESSAGES.CANNOT_RETRY, 409);
+  const hasAudio = rec.hasAudio || sessionAudio.has(id);
+  if (rec.status !== 'error' || !hasAudio) fail('CANNOT_RETRY', ERROR_MESSAGES.CANNOT_RETRY, 409);
   const day = utcDay();
   if ((await modeUsage(rec.quality, day)).remaining === 0) {
     fail('QUOTA_EXCEEDED', ERROR_MESSAGES.QUOTA_EXCEEDED, 429);
   }
-  Object.assign(rec, {
-    status: 'queued',
-    error: null,
-    quotaDay: day,
-    startedAt: null,
-    updatedAt: new Date().toISOString(),
+  const saved = await (
+    await getDemoStore()
+  ).update(id, (r) => {
+    if (r.status !== 'error') return false;
+    Object.assign(r, {
+      status: 'queued',
+      error: null,
+      quotaDay: day,
+      startedAt: null,
+      attempts: 0,
+      runId: null,
+      updatedAt: new Date().toISOString(),
+    });
   });
-  await (await getDemoStore()).put(rec);
+  if (!saved) fail('CANNOT_RETRY', ERROR_MESSAGES.CANNOT_RETRY, 409);
   kick();
-  return toSummary(rec);
+  return toSummary(normalize(saved));
 }
 
 /** Object URL of the stored audio (available after getTranscript has loaded it), or "". */
@@ -575,6 +712,14 @@ export function uploadTranscript(
       }
       const quality = options.quality ?? DEFAULT_QUALITY_MODE;
       if (!isQualityMode(quality)) fail('INVALID_INPUT', 'Unknown quality mode.');
+      if ((options.clientDurationSec ?? 0) > MAX_DEMO_DURATION_SEC) {
+        fail(
+          'FILE_TOO_LARGE',
+          `The in-browser demo handles recordings up to ${MAX_DEMO_DURATION_SEC / 60} minutes. For longer ` +
+            'files, use the full app with a speech-to-text API key.',
+          413,
+        );
+      }
       if (!looksLikeAudio(new Uint8Array(await file.slice(0, 16).arrayBuffer()))) {
         fail('UNSUPPORTED_FILE', undefined, 415);
       }
@@ -613,6 +758,8 @@ export function uploadTranscript(
         status: 'queued',
         startedAt: null,
         completedAt: null,
+        attempts: 0,
+        runId: null,
         languageCode: null,
         error: null,
         document: null,

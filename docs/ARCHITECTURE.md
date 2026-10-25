@@ -314,23 +314,50 @@ the device in `src/web/demo/speech/`:
 ```
 engine.ts          page side: decode the file to 16 kHz mono (OfflineAudioContext), talk to the worker,
                    cancel = terminate the worker
-speech.worker.ts   load models → diarize → plan turns → detect language → Whisper per turn
-diarize.ts         port of sherpa-onnx's speaker-diarization-onnx.py: pyannote segmentation-3.0 on 10 s
-                   windows (powerset → 3 local speakers), WeSpeaker embedding per local speaker,
-                   complete-linkage cosine clustering (cluster.ts), overlap-add, min on/off durations
+speech.worker.ts   load models → diarize → plan turns (≤ 28 s clips) → detect language → Whisper per clip
+diarize.ts         based on sherpa-onnx's pyannote pipeline: segmentation-3.0 on 10 s windows (powerset →
+                   3 local speakers), WeSpeaker embeddings, complete-linkage cosine clustering
+                   (cluster.ts), overlap-add, min on/off durations — with the changes below
 fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false, no CMN) for WeSpeaker
-turns.ts           speaker turns → padded, merged clips for Whisper
+turns.ts           speaker turns → padded, merged clips; long turns cut at the quietest point
+text.ts            clean-up of Whisper's text (sound tags, lone "you" on noise, repetition loops)
 models.ts          ONNX Runtime set-up (self-hosted wasm; threads when cross-origin isolated),
                    model download + Cache API, Whisper via Transformers.js, language detection
 ```
+
+Changes from the reference diarization, each measured against ground truth on conversations
+synthesized with piper TTS voices (2–4 speakers, up to 5.5 min, with and without overlapping
+speech):
+
+- **Anchor windows** (`embedStride`, 5 s): only every few windows get embeddings; a local speaker in
+  another window takes the speaker of an overlapping anchor whose activity agrees with it (IoU ≥ 0.5
+  over the shared frames), and gets its own embedding only when none does. This cuts the embedding
+  work ~5× and, because complete linkage over-splits as embeddings pile up, also stops long files
+  being split into extra speakers (5.5 min, 4 speakers: 6 found before, 4 now).
+- **Clean, long-enough speech per embedding**: frames where two local speakers overlap are left out
+  (as sherpa's C++ version does), and a local speaker needs ≥ 1 s of clean speech for an embedding —
+  shorter samples of one voice are often as far apart as two different voices. Shorter ones are
+  matched to an anchor or left to the overlapping windows.
+- **One window** (≤ 10 s of audio, speaker count unknown): the segmentation model's own local
+  speakers are used directly instead of clustering a few short embeddings.
+- A frame is only given to speakers that some window actually voted for, and invalid embeddings
+  (non-finite, or from the zero-padded tail) are dropped.
+- The same settings for every quality mode (`DIARIZATION_SETTINGS`: 2 s hop, 2 s fingerprints): a
+  1 s hop or 3 s fingerprints were slower and got the number of speakers wrong more often.
 
 - Speaker models are fetched at build time by `scripts/fetch-speech-models.mjs` from sherpa-onnx's
   GitHub releases (SHA-256 pinned) into `vendor/speech-models/` and served from `<base>/models/`.
   Whisper (`Xenova/whisper-{tiny,base,small}`, q8) comes from the Hugging Face hub.
 - Transformers.js assumes English unless a language is given, so `detectLanguage` runs one decoder
   step after `<|startoftranscript|>` on up to 30 s of speech and takes the best language token.
-- Quality modes map to Whisper size and diarization settings (`DIARIZATION_SETTINGS`); long files
-  use a coarser window hop (`max(mode, ceil(minutes / 20))` seconds) to bound the work.
+- Quality modes pick the Whisper size; long files use a coarser window hop
+  (`max(2, ceil(minutes / 20))` seconds, at most 5 s so windows still overlap) to bound the work.
+- Whisper always encodes 30 s, so one clip per speaker turn costs a full pass even for a short
+  turn. Packing several turns into one pass and splitting the text by timestamps was tried: 1.35×
+  faster on a 5.5 min file, but word errors rose from 3.2% to 4.9% (Whisper Tiny), so each turn is
+  still transcribed on its own.
+- After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
+  memory); model errors are reported either as download problems or as "couldn't start" (memory).
 - GitHub Pages can't send COOP/COEP headers; `coi-serviceworker` adds them so ONNX Runtime can use
   threads (`SharedArrayBuffer`). Without it everything still works single-threaded.
 - Test fixtures were generated with Python reference implementations (`kaldi-native-fbank` for

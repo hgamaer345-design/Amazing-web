@@ -34,6 +34,17 @@ export interface DiarizationOptions {
   threshold?: number;
   minDurationOn?: number;
   minDurationOff?: number;
+  /**
+   * Spacing, in samples, of the windows that get their own speaker embeddings. Speakers in the
+   * windows in between are matched to an overlapping embedded window by when they talk (the
+   * windows share most of their audio), which saves most of the embedding work on long files.
+   * Unmatched speakers still get an embedding. 0 or unset = embed every window (the reference).
+   */
+  embedStride?: number;
+  /** Least speech (seconds) a local speaker needs in a window to get its own embedding. */
+  minEmbedSpeech?: number;
+  /** Least activity agreement (intersection over union, 0..1) to reuse a neighbour's speaker. */
+  linkThreshold?: number;
 }
 
 export interface DiarizationModels {
@@ -201,31 +212,121 @@ export async function diarize(
   const perFrame = speakerCount(labels, windowShift);
   if (!perFrame.some((c) => c > 0)) return [];
 
-  // 2. Embeddings for each local speaker with at least ~0.2 s of speech in its window.
-  const pairs: { window: number; speaker: number }[] = [];
-  for (let i = 0; i < labels.length; i++) {
+  const framesPerWindow = labels[0]!.length;
+  const frameSeconds = windowSize / framesPerWindow / SEGMENTATION.sampleRate;
+  const minActive = 10;
+  const countActive = (win: Uint8Array[], j: number) => win.reduce((n, row) => n + row[j]!, 0);
+  const toGlobal = new Map<string, number>();
+  let globalCount: number;
+
+  if (labels.length === 1 && !options.numSpeakers) {
+    // A single window: the segmentation model has already told its speakers apart, more reliably
+    // than embeddings of a few seconds each could (as the reference implementation does).
+    globalCount = 0;
     for (let j = 0; j < localSpeakers; j++) {
-      let active = 0;
-      for (const row of labels[i]!) active += row[j]!;
-      if (active >= 10) pairs.push({ window: i, speaker: j });
+      if (countActive(labels[0]!, j) >= minActive) toGlobal.set(`0:${j}`, globalCount++);
+    }
+    if (globalCount === 0) return [];
+  } else {
+    // 2. Speaker embeddings, from frames where only that speaker talks (overlapped speech would
+    //    mix two voices). An embedding of a fraction of a second is unreliable (two such samples
+    //    of one voice can be as far apart as two different voices), so only local speakers with
+    //    at least `minEmbedSpeech` of clean speech get one. With `embedStride`, only "anchor"
+    //    windows are embedded; other windows (and anchors' short speakers) take the speaker of an
+    //    overlapping anchor whose activity agrees with theirs over the audio the windows share.
+    const clean: Labels = labels.map((win) =>
+      win.map((row) => (row[0]! + row[1]! + row[2]! > 1 ? new Uint8Array(localSpeakers) : row)),
+    );
+    const minEmbedFrames = Math.max(minActive, Math.round((options.minEmbedSpeech ?? 1) / frameSeconds));
+    const cleanFrames = clean.map((win) =>
+      Array.from({ length: localSpeakers }, (_, j) => countActive(win, j)),
+    );
+    const anchorEvery = options.embedStride ? Math.max(1, Math.round(options.embedStride / windowShift)) : 1;
+    const isAnchor = (i: number) => i % anchorEvery === 0 || i === labels.length - 1;
+    const pairs: { window: number; speaker: number }[] = [];
+    const pairIndex = new Map<string, number>();
+    const addPair = (i: number, j: number) => {
+      pairIndex.set(`${i}:${j}`, pairs.length);
+      pairs.push({ window: i, speaker: j });
+    };
+    for (let i = 0; i < labels.length; i += 1) {
+      if (!isAnchor(i)) continue;
+      for (let j = 0; j < localSpeakers; j++) if (cleanFrames[i]![j]! >= minEmbedFrames) addPair(i, j);
+    }
+    // Every local speaker that talks at all but has no embedding of its own yet.
+    const pending: [number, number][] = [];
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = 0; j < localSpeakers; j++) {
+        if (countActive(labels[i]!, j) >= minActive && !pairIndex.has(`${i}:${j}`)) pending.push([i, j]);
+      }
+    }
+    if (pairs.length === 0) {
+      // Only short bursts of speech: embed them anyway rather than finding no one.
+      for (const [i, j] of pending) if (cleanFrames[i]![j]! >= minActive) addPair(i, j);
+      pending.length = 0;
+    }
+    /** (window:speaker) -> the embedded pair it was matched to. */
+    const linked = new Map<string, number>();
+    const linkThreshold = options.linkThreshold ?? 0.5;
+    const reach = Math.ceil(windowSize / windowShift) - 1; // windows further apart don't overlap
+    for (const [i, j] of pending) {
+      let best = { score: 0, pair: -1 };
+      for (let a = Math.max(0, i - reach); a <= Math.min(labels.length - 1, i + reach); a++) {
+        if (a === i || !isAnchor(a)) continue;
+        // Global frame g is frame g - offset(i) of window i and g - offset(a) of window a.
+        const shift = frameOffset(i, windowShift) - frameOffset(a, windowShift);
+        for (let k = 0; k < localSpeakers; k++) {
+          const pair = pairIndex.get(`${a}:${k}`);
+          if (pair === undefined) continue;
+          let both = 0;
+          let either = 0;
+          for (let f = Math.max(0, -shift); f < Math.min(framesPerWindow, framesPerWindow - shift); f++) {
+            const x = labels[i]![f]![j]!;
+            const y = labels[a]![f + shift]![k]!;
+            both += x & y;
+            either += x | y;
+          }
+          const score = both >= minActive ? both / either : 0;
+          if (score > best.score) best = { score, pair };
+        }
+      }
+      if (best.score >= linkThreshold) linked.set(`${i}:${j}`, best.pair);
+      else if (cleanFrames[i]![j]! >= minEmbedFrames) addPair(i, j);
+      // Otherwise: too little speech to identify; the overlapping windows decide those frames.
+    }
+
+    const embeddings: (Float32Array | null)[] = [];
+    for (let p = 0; p < pairs.length; p++) {
+      const { window, speaker } = pairs[p]!;
+      const samples = speakerAudio(audio, clean[window]!, speaker, starts[window]!);
+      // The zero-padded last window can claim speech past the end of the audio; too little real
+      // audio (or a degenerate result) gives no usable embedding.
+      let e: Float32Array | null = null;
+      if (samples.length >= 0.1 * SEGMENTATION.sampleRate) {
+        e = await models.embed(samples);
+        if (!e.length || !e.every(Number.isFinite) || !e.some((v) => v !== 0)) e = null;
+      }
+      embeddings.push(e);
+      onProgress?.(0.3 + 0.65 * ((p + 1) / pairs.length));
+    }
+    const valid = pairs.map((_, p) => p).filter((p) => embeddings[p] !== null);
+    if (valid.length === 0) return [];
+    // 3. Global speakers.
+    const clusters = clusterEmbeddings(
+      valid.map((p) => embeddings[p]!),
+      { numClusters: options.numSpeakers ?? null, threshold: options.threshold ?? 0.5 },
+    );
+    globalCount = Math.max(...clusters) + 1;
+    const clusterOf = new Map<number, number>(valid.map((p, idx) => [p, clusters[idx]!]));
+    pairs.forEach((p, idx) => {
+      const c = clusterOf.get(idx);
+      if (c !== undefined) toGlobal.set(`${p.window}:${p.speaker}`, c);
+    });
+    for (const [key, pair] of linked) {
+      const c = clusterOf.get(pair);
+      if (c !== undefined) toGlobal.set(key, c);
     }
   }
-  if (pairs.length === 0) return [];
-  const embeddings: Float32Array[] = [];
-  for (let p = 0; p < pairs.length; p++) {
-    const { window, speaker } = pairs[p]!;
-    embeddings.push(await models.embed(speakerAudio(audio, labels[window]!, speaker, starts[window]!)));
-    onProgress?.(0.3 + 0.65 * ((p + 1) / pairs.length));
-  }
-
-  // 3. Global speakers.
-  const clusters = clusterEmbeddings(embeddings, {
-    numClusters: options.numSpeakers ?? null,
-    threshold: options.threshold ?? 0.5,
-  });
-  const globalCount = Math.max(...clusters) + 1;
-  const toGlobal = new Map<string, number>();
-  pairs.forEach((p, idx) => toGlobal.set(`${p.window}:${p.speaker}`, clusters[idx]!));
 
   // 4. Aggregate global activity over overlapping windows.
   let frames = totalFrames(labels.length, windowShift);
@@ -247,10 +348,10 @@ export async function diarize(
     const row = new Uint8Array(globalCount);
     const speakers = Math.min(perFrame[f] ?? 0, globalCount);
     if (speakers > 0) {
-      const order = Array.from(activity[f]!, (v, g) => [v, g] as const).sort(
-        (a, b) => b[0] - a[0] || a[1] - b[1],
-      );
-      for (let k = 0; k < speakers; k++) row[order[k]![1]] = 1;
+      const order = Array.from(activity[f]!, (v, g) => [v, g] as const)
+        .filter(([v]) => v > 0) // no identified speaker covers this frame: leave it out
+        .sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+      for (let k = 0; k < Math.min(speakers, order.length); k++) row[order[k]![1]] = 1;
     }
     final.push(row);
   }

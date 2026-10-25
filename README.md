@@ -166,22 +166,27 @@ in which everything happens in the browser:
   turn with [Whisper](https://github.com/openai/whisper) via
   [Transformers.js](https://github.com/huggingface/transformers.js), detecting the language
   automatically. Nothing is uploaded.
-- **Quality modes pick the model:**
+- **Quality modes pick the speech model** (speaker separation is the same in every mode):
 
-  | Mode           | Speech model  | Download (once) | Speaker analysis                |
-  | -------------- | ------------- | --------------- | ------------------------------- |
-  | **Standard**   | Whisper Tiny  | ~40 MB          | 2 s steps                       |
-  | **High**       | Whisper Base  | ~80 MB          | 1 s steps (default)             |
-  | **Ultra High** | Whisper Small | ~250 MB         | 1 s steps, longer voice samples |
+  | Mode           | Speech model  | Download (once) |
+  | -------------- | ------------- | --------------- |
+  | **Standard**   | Whisper Tiny  | ~40 MB          |
+  | **High**       | Whisper Base  | ~80 MB          |
+  | **Ultra High** | Whisper Small | ~250 MB         |
 
-  The speaker models (~32 MB) are served by the site itself; Whisper is downloaded from the
-  Hugging Face hub. The browser caches all of them, so later files start straight away.
+  On top of that the first visit loads the speaker models (~32 MB, served by the site itself) and
+  the ONNX Runtime WebAssembly engine (~14 MB); Whisper comes from the Hugging Face hub. The browser
+  caches all of them, so later files start straight away.
 
-- **Speed** depends on the device: on a recent laptop a minute of audio takes very roughly one to
-  three minutes in High. A desktop browser (Chrome, Edge, Firefox or Safari) is recommended for long
-  files; phones work but are slower. A small service worker
-  ([coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)) enables multi-threading,
-  which is why the page reloads once on the first visit.
+- **Long recordings work** — a 5-minute file is fine. Speaker separation looks at the audio in
+  overlapping 10-second windows and takes voice fingerprints only every few seconds, so it stays
+  quick, and turns longer than ~28 seconds are cut at a pause so progress keeps moving.
+- **Speed** depends on the device and the mode. On a busy 4-core test machine a 5½-minute,
+  4-speaker recording took about 4 minutes in Standard; High takes longer and Ultra High several
+  times longer, while recent laptops are faster. A desktop browser (Chrome, Edge, Firefox or Safari)
+  is recommended for long files; phones work but are slower. Recordings up to 90 minutes are
+  accepted. A small service worker ([coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker))
+  enables multi-threading, which is why the page reloads once on the first visit.
 - History is stored in your browser (IndexedDB) and exports are generated in the browser.
 
 Building and publishing:
@@ -278,5 +283,6 @@ More detail on the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The demo says the speech models couldn't be downloaded** — the browser couldn't reach
   `huggingface.co` (Whisper) or the site's `models/` folder; check the connection, ad blockers or a
   network filter, then press Retry.
-- **The demo is slow or the tab runs out of memory** — choose Standard, close other tabs, or use a
-  desktop browser; for recordings longer than about an hour, use the full app with an API key.
+- **The demo is slow, or says the device couldn't start the speech model** — the device ran low on
+  memory or is slow: choose Standard (or High instead of Ultra High), close other tabs, or use a
+  desktop browser. For recordings longer than about an hour, use the full app with an API key.
