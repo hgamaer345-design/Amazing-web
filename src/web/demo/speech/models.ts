@@ -11,7 +11,7 @@ import type { DiarizationModels } from './diarize';
 import { fetchCached, modelUrl, type ByteProgress } from './download';
 export type { ByteProgress } from './download';
 import { computeFbank, subtractMean } from './fbank';
-import { loadOmnilingual, OMNILINGUAL_MB } from './omnilingual';
+import { loadOmnilingual, OMNILINGUAL_LITE_MAX_SECONDS, OMNILINGUAL_MB } from './omnilingual';
 import { stripOutputs, UNUSED_WHISPER_OUTPUT } from './onnxOutputs';
 import type { Recognizer, RecognizerId } from './recognizer';
 import { isWhisper, rankLanguages, whisperLanguage, type LanguageGuess, type WhisperId } from './routing';
@@ -495,7 +495,9 @@ export async function loadRecognizer(id: RecognizerId, onProgress: ByteProgress)
   if (isWhisper(id)) return loadWhisperRecognizer(id, onProgress);
   configureRuntime();
   try {
-    return await (id === 'sensevoice' ? loadSenseVoice(onProgress) : loadOmnilingual(onProgress));
+    if (id === 'sensevoice') return await loadSenseVoice(onProgress);
+    // Its working memory grows with the clip's length: phones hear at most 12 s at a time.
+    return await loadOmnilingual(onProgress, lite ? { maxSeconds: OMNILINGUAL_LITE_MAX_SECONDS } : {});
   } catch (err) {
     if (err instanceof ModelLoadError) throw err;
     throw new ModelLoadError(isDownloadError(err) ? 'download' : 'load', errorMessage(err));

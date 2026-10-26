@@ -514,7 +514,8 @@ export function withRowLanguages(
   languageCode: string | null,
 ): TranscriptRow[] {
   const languages = new Set(segments.flatMap((s) => (s.lang && s.text.trim() ? [s.lang] : [])));
-  if (languages.size <= 1) return rows;
+  // buildDocument copies the segments' language onto rows; a single-language document drops it.
+  if (languages.size <= 1) return rows.map(({ lang: _lang, ...row }) => row);
   // Which speaker each engine label became (buildDocument numbers speakers itself): the one whose
   // rows its segments match best (intersection over union, so a short reply inside someone else's
   // long turn still matches its own row).

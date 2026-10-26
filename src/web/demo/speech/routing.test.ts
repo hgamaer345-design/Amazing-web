@@ -54,8 +54,13 @@ describe('chooseRecognizer', () => {
   });
 
   it('sends languages where Whisper Small stays poor, or that FLEURS lacks, to Omnilingual ASR', () => {
-    for (const code of ['ar', 'hi', 'fa', 'he', 'cs', 'el', 'ta', 'ur', 'sw', 'bn', 'hu', 'da', 'gl']) {
+    for (const code of ['ar', 'hi', 'fa', 'cs', 'el', 'ta', 'sw', 'bn', 'hu', 'da', 'gl']) {
       expect(chooseRecognizer(code, 'ultra')).toBe('omnilingual');
+    }
+    // Whisper Small measured as good as or better than Omnilingual for these; phones can't run it.
+    for (const code of ['ur', 'he']) {
+      expect(chooseRecognizer(code, 'standard')).toBe('whisper-small');
+      expect(chooseRecognizer(code, 'standard', true)).toBe('omnilingual');
     }
     for (const code of ['eu', 'sq', 'la', 'haw', 'nn'])
       expect(chooseRecognizer(code, 'high')).toBe('omnilingual');

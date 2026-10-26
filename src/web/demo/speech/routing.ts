@@ -63,6 +63,13 @@ export const FLEURS_WER: Readonly<Record<string, readonly [number, number, numbe
   ln: [105.4, 96.7, 91.3], ha: [100.2, 98.6, 90.1], jw: [107.3, 89.5, 88.6],
 };
 
+/**
+ * Languages where Whisper Small did as well as or better than Omnilingual ASR on FLEURS clips
+ * (Urdu 43 vs 48 % WER, Hebrew 45 vs 45 %, and Whisper keeps punctuation): Small is used for them
+ * where the device runs it, although its FLEURS figure is above POOR_WER.
+ */
+export const WHISPER_SMALL_PREFERRED: readonly string[] = ['ur', 'he'];
+
 /** A Whisper size is good enough for a language at or below this FLEURS error rate (%)… */
 export const GOOD_WER = 20;
 /** …and worse than Omnilingual ASR above this one. */
@@ -113,6 +120,7 @@ export function chooseRecognizer(
     const from = Math.max(whisperIndex(least), whisperIndex('whisper-base'));
     for (let i = from; i <= whisperIndex(max); i++) if (wer[i]! <= GOOD_WER) return WHISPER_IDS[i]!;
     if (wer[whisperIndex(max)]! <= POOR_WER || !ctc) return max;
+    if (max === 'whisper-small' && WHISPER_SMALL_PREFERRED.includes(code)) return max;
   }
   return ctc ? 'omnilingual' : max;
 }
