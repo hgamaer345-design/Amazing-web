@@ -175,8 +175,11 @@ interface LiveJob {
   stop: (() => void) | null;
 }
 
-/** A job interrupted this many times (e.g. the tab ran out of memory) is not restarted again. */
-const MAX_ATTEMPTS = 2;
+/**
+ * A run that ended without the page closing normally crashed the tab (usually out of memory on a
+ * phone). Restarting it on the next load would just crash again, so it isn't retried automatically.
+ */
+const MAX_ATTEMPTS = 1;
 const live = new Map<string, LiveJob>();
 /** Uploaded files kept in memory in case storing them in IndexedDB failed (quota). */
 const sessionAudio = new Map<string, Blob>();
@@ -296,8 +299,8 @@ async function recoverInterrupted(): Promise<void> {
         r.status = 'error';
         r.error = jobError(
           'TRANSCRIPTION_FAILED',
-          'The page closed or ran out of memory while transcribing this file. Try again with a lower ' +
-            'quality or a shorter recording.',
+          'The page stopped while transcribing this file, most likely because the device ran out of memory. ' +
+            'Try the Standard quality or a shorter recording, or use a computer.',
         );
       } else {
         r.status = 'queued';
@@ -805,7 +808,7 @@ export function uploadTranscript(
         durationSec,
         speakersExpected: s,
         quality,
-        quotaDay: utcDay(now),
+        quotaDay: utcDay(),
         keepAudio: options.keepAudio,
         hasAudio: false,
         createdAt: new Date(now).toISOString(),

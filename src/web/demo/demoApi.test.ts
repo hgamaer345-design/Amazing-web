@@ -243,7 +243,7 @@ describe('demo API (in-browser transcription)', () => {
     expect(await demo.listTranscripts()).toEqual([]);
   });
 
-  it('restarts a job cut short by a reload once, then stops instead of crashing again', async () => {
+  it('does not restart a job that crashed the page, but resumes one whose tab was closed', async () => {
     const store = await getDemoStore();
     const now = new Date().toISOString();
     const interrupted = (id: string, attempts: number): DemoRecord => ({
@@ -269,24 +269,22 @@ describe('demo API (in-browser transcription)', () => {
       error: null,
       document: null,
     });
-    await store.put(interrupted('crashed-twice', 2));
-    await store.put(interrupted('crashed-once', 1));
-    await store.put({ ...interrupted('closed-tab', 2), runId: 'run_closed', createdAt: `${now}x` });
-    await store.putAudio('crashed-twice', wavFile('a.wav'));
-    await store.putAudio('crashed-once', wavFile('b.wav'));
+    await store.put(interrupted('crashed', 1));
+    await store.put({ ...interrupted('closed-tab', 1), runId: 'run_closed', createdAt: `${now}x` });
+    await store.putAudio('crashed', wavFile('a.wav'));
     await store.putAudio('closed-tab', wavFile('c.wav'));
     // The page recorded that this run ended because the tab was closed, not because it crashed.
     localStorage.setItem('speaker-transcriber-demo:closed-run:run_closed', '1');
     demo.resetDemoStateForTests(); // as after a reload
 
     await demo.listTranscripts();
-    const gaveUp = await settled('crashed-twice');
+    // Restarting it would crash the page again (Safari then gives up on the site).
+    const gaveUp = await settled('crashed');
     expect(gaveUp.error?.message).toMatch(/ran out of memory/);
     expect(gaveUp.audioAvailable).toBe(true); // Retry still possible
     (await nextJob(1)).resolve(RESULT);
-    expect((await settled('crashed-once')).status).toBe('done');
-    (await nextJob(2)).resolve(RESULT);
     expect((await settled('closed-tab')).status).toBe('done');
+    expect(jobs).toHaveLength(1);
   });
 
   it('reads records saved by older demo versions', async () => {
