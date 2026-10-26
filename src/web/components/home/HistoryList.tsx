@@ -9,6 +9,7 @@ import { usePolling } from '../../hooks/usePolling';
 import { useNow } from '../../hooks/useUsage';
 import { formatRelativeTime } from '../../lib/relativeTime';
 import { DeleteTranscriptButton } from '../editor/DeleteActions';
+import { languageName } from '../editor/format';
 
 type Filter = 'all' | 'done' | 'processing' | 'failed';
 
@@ -50,9 +51,12 @@ function StatusBadge({ t }: { t: TranscriptSummary }) {
 
 function HistoryCard({ t, now, onDeleted }: { t: TranscriptSummary; now: number; onDeleted: () => void }) {
   const quality = QUALITY_MODE_DEFINITIONS[t.quality];
+  // The detected language once known, else the one chosen at upload.
+  const language = t.languageCode ?? t.requestedLanguage ?? null;
   const meta = [
     formatDuration(t.durationSec),
     t.speakerCount != null ? `${t.speakerCount} ${t.speakerCount === 1 ? 'speaker' : 'speakers'}` : null,
+    language ? languageName(language) : null,
     formatRelativeTime(t.createdAt, now),
   ].filter(Boolean);
   return (
@@ -70,7 +74,9 @@ function HistoryCard({ t, now, onDeleted }: { t: TranscriptSummary; now: number;
           </svg>
         </span>
         <span className="history-body">
-          <span className="history-title">{t.title}</span>
+          <span className="history-title" dir="auto">
+            {t.title}
+          </span>
           <span className="history-meta">{meta.join(' · ')}</span>
           {t.status === 'error' && t.error && <span className="history-error">{t.error.message}</span>}
         </span>

@@ -7,6 +7,7 @@ import fsp from 'node:fs/promises';
 import type { IncomingMessage } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import { parseFile, type IAudioMetadata } from 'music-metadata';
+import { isWhisperLanguage, type WhisperLanguage } from '../shared/languages';
 import { DEFAULT_QUALITY_MODE, isQualityMode } from '../shared/quality';
 import { formatBytes } from '../shared/time';
 import { ACCEPTED_EXTENSIONS, type AcceptedExtension, type QualityMode } from '../shared/types';
@@ -55,6 +56,8 @@ export interface ReceivedUpload {
   speakersExpected: number | null;
   keepAudio: boolean;
   quality: QualityMode;
+  /** The language the user said the recording is in; null = detect automatically. */
+  language: WhisperLanguage | null;
 }
 
 interface UploadFields {
@@ -62,6 +65,7 @@ interface UploadFields {
   keepAudio: boolean;
   clientDurationSec: number | null;
   quality: QualityMode;
+  language: WhisperLanguage | null;
 }
 
 interface PartFile {
@@ -157,8 +161,22 @@ export function parseQuality(value: string): QualityMode {
   throw new AppError('INVALID_INPUT', 'quality must be "standard", "high" or "ultra".');
 }
 
+/** A language code from WHISPER_LANGUAGES ("fr"), or null for "auto" / blank (detect it). */
+export function parseLanguage(value: string): WhisperLanguage | null {
+  const v = value.trim().toLowerCase();
+  if (v === '' || v === 'auto') return null;
+  if (isWhisperLanguage(v)) return v;
+  throw new AppError(
+    'INVALID_INPUT',
+    'The language must be a supported language code (such as "fr"), or "auto" to detect it.',
+  );
+}
+
 function applyField(fields: UploadFields, name: string, value: string, maxSpeakers: number): void {
   switch (name) {
+    case 'language':
+      fields.language = parseLanguage(value);
+      break;
     case 'quality':
       fields.quality = parseQuality(value);
       break;
@@ -265,6 +283,7 @@ function receiveMultipart(
       keepAudio: false,
       clientDurationSec: null,
       quality: limits.defaultQuality ?? DEFAULT_QUALITY_MODE,
+      language: null,
     };
     const abortWrite = new AbortController();
     let file: PartFile | null = null;
@@ -443,6 +462,7 @@ export async function receiveUpload(
       speakersExpected: fields.speakersExpected,
       keepAudio: fields.keepAudio,
       quality: fields.quality,
+      language: fields.language,
     };
   } catch (err) {
     await Promise.all([storage.delete(file.partName), storage.delete(file.finalName)]).catch(

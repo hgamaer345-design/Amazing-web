@@ -77,7 +77,9 @@ export const SpeakerLegend = memo(function SpeakerLegend({
                   onClick={() => setEditingId(s.id)}
                 >
                   <span className="spk-dot" aria-hidden="true" />
-                  <span className="spk-chip-name">{s.name}</span>
+                  <span className="spk-chip-name" dir="auto">
+                    {s.name}
+                  </span>
                   <span className="spk-count">{countLabel}</span>
                   <EditIcon />
                 </button>

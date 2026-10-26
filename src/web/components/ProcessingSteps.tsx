@@ -127,7 +127,7 @@ export default function ProcessingSteps(props: ProcessingStepsProps) {
     <div className={`steps${failed ? ' steps-failed' : ''}`} data-stage={stage}>
       {(fileName || durationSec != null) && (
         <p className="steps-file">
-          {fileName && <strong>{fileName}</strong>}
+          {fileName && <strong dir="auto">{fileName}</strong>}
           {durationSec != null && <span> · {formatDuration(durationSec)}</span>}
         </p>
       )}

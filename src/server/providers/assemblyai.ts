@@ -1,3 +1,4 @@
+import { joinText } from '../../shared/text';
 import { log } from '../logger';
 import { fileBody, providerFetch, readJson, sleep } from './http';
 import {
@@ -70,7 +71,7 @@ export function mapAssemblyAiTranscript(t: AaiTranscript): ProviderResult {
       const last = segments[segments.length - 1];
       const speaker = w.speaker ?? null;
       if (last && last.speaker === speaker) {
-        last.text += ` ${w.text}`;
+        last.text = joinText(last.text, w.text);
         last.endMs = w.end;
       } else {
         segments.push({ speaker, startMs: w.start, endMs: w.end, text: w.text });
@@ -162,9 +163,12 @@ export function createAssemblyAiProvider(opts: AssemblyAiOptions): Transcription
       const body: Record<string, unknown> = {
         audio_url: audioUrl,
         speech_models: req.quality === 'standard' ? opts.standardSpeechModels : opts.speechModels,
-        language_detection: true,
         speaker_labels: true,
       };
+      // AssemblyAI's language codes are Whisper's ("jw", "haw" included). With a code set, the first
+      // of `speech_models` that supports the language is used; detection must then be left off.
+      if (req.language) body.language_code = req.language;
+      else body.language_detection = true;
       if (req.speakersExpected != null) body.speakers_expected = req.speakersExpected;
       const created = await providerFetch(
         `${opts.baseUrl}/v2/transcript`,

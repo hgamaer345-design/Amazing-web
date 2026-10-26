@@ -32,6 +32,8 @@ export interface TranscribeRequest {
   speakersExpected: number | null;
   /** Quality mode; selects the provider model. Defaults to "high". */
   quality?: QualityMode;
+  /** Language the user chose (a WHISPER_LANGUAGES code, e.g. "fr"); null/absent = detect it. */
+  language?: string | null;
   /** Aborted when the job is deleted, the lease is lost, the job times out or the server shuts down. */
   signal: AbortSignal;
   /**

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { baseLanguage } from '../../../shared/languages';
 import { makeId } from '../../../shared/speakers';
 import { formatDuration } from '../../../shared/time';
 import type {
@@ -28,7 +29,7 @@ import { AudioPlayer, type AudioSource } from './AudioPlayer';
 import { DeleteAudioButton, DeleteTranscriptButton } from './DeleteActions';
 import { EditableTitle } from './EditableTitle';
 import { ExportMenu } from './ExportMenu';
-import { formatDateTime, languageName } from './format';
+import { formatDateTime, languageName, spokenLanguages } from './format';
 import { RedoIcon, UndoIcon } from './icons';
 import { SaveStatus } from './SaveStatus';
 import { SpeakerLegend } from './SpeakerLegend';
@@ -65,6 +66,30 @@ function isSpaceTarget(el: Element | null): boolean {
 
 function toEditable(doc: TranscriptDocument): EditableDoc {
   return { speakers: doc.speakers, rows: doc.rows };
+}
+
+/** The "Language" header item: every language spoken, and whether the user chose it before upload. */
+function LanguageMeta({ languages, requested }: { languages: readonly string[]; requested: string | null }) {
+  const shown = languages.length > 0 ? languages : requested ? [requested] : [];
+  const chosen =
+    requested != null && shown.length === 1 && baseLanguage(shown[0]) === baseLanguage(requested);
+  return (
+    <>
+      <div data-testid="transcript-languages">
+        <dt>{shown.length > 1 ? 'Languages' : 'Language'}</dt>
+        <dd>
+          {shown.length > 0 ? shown.map((code) => languageName(code)).join(', ') : languageName(null)}
+          {chosen && ' (chosen)'}
+        </dd>
+      </div>
+      {requested && !chosen && (
+        <div data-testid="transcript-requested-language">
+          <dt>Chosen language</dt>
+          <dd>{languageName(requested)}</dd>
+        </div>
+      )}
+    </>
+  );
 }
 
 export function TranscriptEditor({ transcript, document: loaded, onSummaryChange }: TranscriptEditorProps) {
@@ -159,6 +184,10 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
     [apply, seek],
   );
   const rowCounts = useMemo(() => countRowsBySpeaker(doc.rows), [doc.rows]);
+  const languages = useMemo(
+    () => spokenLanguages(doc.rows, transcript.languageCode),
+    [doc.rows, transcript.languageCode],
+  );
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -222,16 +251,15 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
           <dl className="tx-meta">
             <div>
               <dt>File</dt>
-              <dd className="tx-meta-file">{transcript.originalFilename}</dd>
+              <dd className="tx-meta-file" dir="auto">
+                {transcript.originalFilename}
+              </dd>
             </div>
             <div>
               <dt>Duration</dt>
               <dd>{formatDuration(transcript.durationSec)}</dd>
             </div>
-            <div>
-              <dt>Language</dt>
-              <dd>{languageName(transcript.languageCode)}</dd>
-            </div>
+            <LanguageMeta languages={languages} requested={transcript.requestedLanguage ?? null} />
             <div>
               <dt>Speakers</dt>
               <dd>{rowCounts.size}</dd>
@@ -336,6 +364,7 @@ export function TranscriptEditor({ transcript, document: loaded, onSummaryChange
         trackPlayback={hasAudio}
         followAlong={followAlong}
         actions={actions}
+        languageCode={transcript.languageCode}
       />
     </div>
   );

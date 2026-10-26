@@ -14,7 +14,8 @@ speech-to-text API key ([Quick start](#quick-start)).
 - **Upload** by drag-and-drop or file picker: MP3, WAV, M4A, OGG, FLAC and WEBM, up to 500 MB.
   Shows the file name, size and duration, and upload progress.
 - **Transcription with speaker diarization** through [AssemblyAI](https://www.assemblyai.com/) or
-  [Deepgram](https://deepgram.com/), with automatic language detection.
+  [Deepgram](https://deepgram.com/), in any of 99 languages: detected automatically, or chosen before
+  uploading (see [Languages](#languages)).
 - **Speaker separation:** a new row starts every time the speaker changes; consecutive sentences from
   the same speaker stay in one row.
 - **Results table** with `#`, **Speaker**, **Start** and **End** (`HH:MM:SS`) and **Text** columns.
@@ -86,6 +87,32 @@ back. Change the limit with `ULTRA_DAILY_LIMIT` (`unlimited` removes it). In the
 limit is tracked in your browser, and the modes pick the in-browser models instead (see
 [Demo on GitHub Pages](#demo-on-github-pages)).
 
+## Languages
+
+- **Detect automatically** is the default. The full app has the provider detect the recording's
+  language; the demo detects it **for each speaker**, so a conversation in two languages comes out
+  right.
+- **Or choose the language** under **Language** before uploading (Whisper's 99 languages, most
+  common first). Every speaker is then transcribed in that language, which helps when detection
+  gets it wrong (short, noisy or accented recordings). The full app passes it to the provider:
+  AssemblyAI uses the first of its speech models that supports the language; Deepgram models don't
+  all offer every language, and a refused combination fails with the model and language named.
+- **The transcript shows its languages** ("English, French") and, if you chose one, says so; the
+  history shows each recording's language. Right-to-left text (Arabic, Hebrew, Persian, Urdu…) is
+  displayed right to left, and Chinese and Japanese text is joined without spaces.
+- **In the demo, other languages download another model the first time** (then cached). English
+  and Spanish use the quality mode's Whisper model; Whisper's smaller models are much weaker in
+  other languages, so those get a larger or specialised model:
+
+  | Language                             | Speech model                                                                                           |
+  | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+  | English, Spanish                     | The quality mode's Whisper (Tiny ~40 MB, Base ~80 MB or Small ~250 MB)                                 |
+  | Chinese, Cantonese, Japanese, Korean | SenseVoice-Small (~240 MB)                                                                             |
+  | Other languages                      | A larger Whisper, or Omnilingual ASR (~365 MB, 1,600+ languages, no punctuation) where Whisper is poor |
+
+  These models are large: on phones a recording in another language takes longer to start and is
+  more likely to run out of memory, so use a computer for long recordings in other languages.
+
 ## Choosing a provider
 
 | Provider       | How to enable                 | Notes                                                                                                                                                                                     |
@@ -140,8 +167,8 @@ real environment variables take precedence).
 1. The browser uploads the file (with progress) to `POST /api/transcripts`. The server streams it to
    disk, checks the file type by its content, reads the duration and queues a job.
 2. A background worker picks up the job, sends the audio to the provider with diarization and
-   language detection, and waits for the result. Long files never block a web request: the page
-   polls `GET /api/transcripts/:id` for the status and estimated time remaining.
+   language detection (or the chosen language), and waits for the result. Long files never block a
+   web request: the page polls `GET /api/transcripts/:id` for the status and estimated time remaining.
 3. The worker turns the provider's utterances into rows (a new row at every speaker change), saves
    the transcript and deletes the audio (unless kept).
 
@@ -164,9 +191,10 @@ in which everything happens in the browser:
   and [WeSpeaker](https://github.com/wenet-e2e/wespeaker) ResNet34 models, a port of
   [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)'s pipeline), then transcribes each speaker
   turn with [Whisper](https://github.com/openai/whisper) via
-  [Transformers.js](https://github.com/huggingface/transformers.js), detecting the language
-  automatically. Nothing is uploaded.
-- **Quality modes pick the speech model** (speaker separation is the same in every mode):
+  [Transformers.js](https://github.com/huggingface/transformers.js), detecting each speaker's
+  language (or using the one you chose; see [Languages](#languages)). Nothing is uploaded.
+- **Quality modes pick the speech model** for English and Spanish (other languages: see
+  [Languages](#languages); speaker separation is the same in every mode):
 
   | Mode           | Speech model  | Download (once) |
   | -------------- | ------------- | --------------- |
@@ -234,21 +262,21 @@ the app shouldn't be public (anyone who can open it can see the history).
 
 ## API
 
-| Method & path                              | Purpose                                                                          |
-| ------------------------------------------ | -------------------------------------------------------------------------------- |
-| `GET /api/config`                          | Provider status, upload limit, accepted formats, quality modes.                  |
-| `GET /api/usage`                           | Today's use of limited quality modes for this visitor.                           |
-| `POST /api/transcripts`                    | Upload (multipart: `file`, optional `speakersExpected`, `keepAudio`, `quality`). |
-| `GET /api/transcripts`                     | History, newest first.                                                           |
-| `GET /api/transcripts/:id`                 | Status, progress/ETA and (when done) the transcript.                             |
-| `PUT /api/transcripts/:id/document`        | Save edits (optimistic concurrency via `baseVersion`).                           |
-| `PATCH /api/transcripts/:id`               | Rename.                                                                          |
-| `DELETE /api/transcripts/:id`              | Delete the transcript and any stored audio.                                      |
-| `DELETE /api/transcripts/:id/audio`        | Delete only the stored audio.                                                    |
-| `POST /api/transcripts/:id/retry`          | Retry a failed job (when its audio is still stored).                             |
-| `GET /api/transcripts/:id/audio`           | Stream the audio (supports HTTP Range).                                          |
-| `GET /api/transcripts/:id/export?format=…` | Download `csv`, `xlsx`, `txt`, `srt` or `docx`.                                  |
-| `GET /api/health`                          | Health check.                                                                    |
+| Method & path                              | Purpose                                                                                      |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `GET /api/config`                          | Provider status, upload limit, accepted formats, quality modes.                              |
+| `GET /api/usage`                           | Today's use of limited quality modes for this visitor.                                       |
+| `POST /api/transcripts`                    | Upload (multipart: `file`, optional `speakersExpected`, `keepAudio`, `quality`, `language`). |
+| `GET /api/transcripts`                     | History, newest first.                                                                       |
+| `GET /api/transcripts/:id`                 | Status, progress/ETA and (when done) the transcript.                                         |
+| `PUT /api/transcripts/:id/document`        | Save edits (optimistic concurrency via `baseVersion`).                                       |
+| `PATCH /api/transcripts/:id`               | Rename.                                                                                      |
+| `DELETE /api/transcripts/:id`              | Delete the transcript and any stored audio.                                                  |
+| `DELETE /api/transcripts/:id/audio`        | Delete only the stored audio.                                                                |
+| `POST /api/transcripts/:id/retry`          | Retry a failed job (when its audio is still stored).                                         |
+| `GET /api/transcripts/:id/audio`           | Stream the audio (supports HTTP Range).                                                      |
+| `GET /api/transcripts/:id/export?format=…` | Download `csv`, `xlsx`, `txt`, `srt` or `docx`.                                              |
+| `GET /api/health`                          | Health check.                                                                                |
 
 Request and response types are defined in [`src/shared/types.ts`](src/shared/types.ts).
 

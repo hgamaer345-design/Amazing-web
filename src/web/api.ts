@@ -210,6 +210,7 @@ export function uploadTranscript(
     if (options.speakersExpected != null) form.append('speakersExpected', String(options.speakersExpected));
     form.append('keepAudio', options.keepAudio ? 'true' : 'false');
     if (options.quality) form.append('quality', options.quality);
+    if (options.language) form.append('language', options.language);
     if (options.clientDurationSec != null && Number.isFinite(options.clientDurationSec)) {
       form.append('clientDurationSec', String(options.clientDurationSec));
     }

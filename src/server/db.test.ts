@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { openDatabase, TranscriptRepository, type NewTranscriptInput } from './db';
 
 function input(id: string, overrides: Partial<NewTranscriptInput> = {}): NewTranscriptInput {
@@ -167,5 +170,43 @@ describe('TranscriptRepository', () => {
       ok: false,
       reason: 'not_found',
     });
+  });
+
+  it('stores the language chosen at upload (none = detect)', () => {
+    const { repo } = setup();
+    expect(repo.create(input('a', { requestedLanguage: 'ja' })).requestedLanguage).toBe('ja');
+    expect(repo.create(input('b')).requestedLanguage).toBeNull();
+    expect(repo.get('a')?.requestedLanguage).toBe('ja');
+    expect(repo.get('b')?.requestedLanguage).toBeNull();
+  });
+});
+
+describe('database migrations', () => {
+  it('adds the requested language to a database created before it existed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'speaker-db-'));
+    const file = path.join(dir, 'transcripts.db');
+    try {
+      // Recreate the previous schema (version 2): no requested_language column.
+      const old = openDatabase(file);
+      old.exec('ALTER TABLE transcripts DROP COLUMN requested_language');
+      old.pragma('user_version = 2');
+      old
+        .prepare(
+          `INSERT INTO transcripts (id, title, original_filename, mime_type, extension, size_bytes, status,
+             provider, created_at, updated_at)
+           VALUES ('old', 'Old', 'old.mp3', 'audio/mpeg', 'mp3', 10, 'done', 'mock', '2025-01-01', '2025-01-01')`,
+        )
+        .run();
+      old.close();
+
+      const db = openDatabase(file);
+      expect(db.pragma('user_version', { simple: true })).toBe(3);
+      const repo = new TranscriptRepository(db);
+      expect(repo.get('old')).toMatchObject({ id: 'old', status: 'done', requestedLanguage: null });
+      expect(repo.create(input('new', { requestedLanguage: 'fr' })).requestedLanguage).toBe('fr');
+      db.close();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -3,7 +3,13 @@ import type { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { createTestContext, fakeProvider, waitFor, type TestContext } from '../../tests/server/context';
 import { makeWav } from '../../tests/server/wav';
-import { parseClientDuration, parseKeepAudio, parseSpeakersExpected, titleFromFilename } from './upload';
+import {
+  parseClientDuration,
+  parseKeepAudio,
+  parseLanguage,
+  parseSpeakersExpected,
+  titleFromFilename,
+} from './upload';
 
 let ctx: TestContext;
 afterEach(() => ctx?.cleanup());
@@ -112,6 +118,35 @@ describe('POST /api/transcripts', () => {
       .attach('file', makeWav({ seconds: 1 }), 'a.wav');
     expect(res.status).toBe(201);
     expect(res.body.transcript).toMatchObject({ speakersExpected: null, provider: 'deepgram' });
+  });
+
+  it('records the language chosen for the recording', async () => {
+    const res = await upload()
+      .field('language', 'fr')
+      .attach('file', makeWav({ seconds: 1 }), 'interview.wav');
+    expect(res.status).toBe(201);
+    expect(res.body.transcript.requestedLanguage).toBe('fr');
+    expect(ctx.repo.get(res.body.transcript.id)?.requestedLanguage).toBe('fr');
+    const listed = await request(ctx.app).get(`/api/transcripts/${res.body.transcript.id}`);
+    expect(listed.body.transcript.requestedLanguage).toBe('fr');
+  });
+
+  it.each([undefined, 'auto', ''])('detects the language when the field is %j', async (value) => {
+    let req = upload();
+    if (value !== undefined) req = req.field('language', value);
+    const res = await req.attach('file', makeWav({ seconds: 1 }), 'a.wav');
+    expect(res.status).toBe(201);
+    expect(res.body.transcript.requestedLanguage).toBeNull();
+  });
+
+  it.each(['xx', 'en-US', 'French', 'auto-detect'])('rejects language=%s', async (value) => {
+    const res = await upload()
+      .field('language', value)
+      .attach('file', makeWav({ seconds: 1 }), 'a.wav');
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('INVALID_INPUT');
+    expect(res.body.error.message).toContain('language');
+    expectNothingStored();
   });
 
   it('rejects unsupported extensions without storing anything', async () => {
@@ -342,6 +377,17 @@ describe('field parsing', () => {
     expect(parseKeepAudio('FALSE')).toBe(false);
     expect(parseKeepAudio('')).toBe(false);
     expect(() => parseKeepAudio('yes')).toThrow();
+  });
+
+  it('parses language', () => {
+    expect(parseLanguage('')).toBeNull();
+    expect(parseLanguage(' auto ')).toBeNull();
+    expect(parseLanguage('AUTO')).toBeNull();
+    expect(parseLanguage('ja')).toBe('ja');
+    expect(parseLanguage(' HAW ')).toBe('haw');
+    expect(parseLanguage('jw')).toBe('jw');
+    expect(() => parseLanguage('jv')).toThrow(/language/);
+    expect(() => parseLanguage('zh-CN')).toThrow(/language/);
   });
 
   it('parses clientDurationSec leniently', () => {

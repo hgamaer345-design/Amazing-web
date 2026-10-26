@@ -76,6 +76,7 @@ export function SpeakerNameForm({
         className="input"
         value={value}
         maxLength={MAX_SPEAKER_NAME_LENGTH}
+        dir="auto"
         autoComplete="off"
         autoFocus
         onFocus={(e) => e.currentTarget.select()}

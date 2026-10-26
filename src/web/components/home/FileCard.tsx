@@ -140,7 +140,7 @@ export function FileCard({ file, url, durationSec, analysing, waveform, onRemove
           {ext}
         </span>
         <div className="file-card-info">
-          <p className="file-name" title={file.name}>
+          <p className="file-name" title={file.name} dir="auto">
             {file.name}
           </p>
           <p className="file-meta">
