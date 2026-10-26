@@ -1,11 +1,14 @@
 import { formatSrtTimestamp } from '../time';
-import type { ExportRow } from './common';
+import { isRtlText, RLM, type ExportRow } from './common';
 
-/** Subtitle layout targets (common broadcast guidelines). */
+/**
+ * Subtitle layout targets (common broadcast guidelines), in columns: a Chinese, Japanese or Korean
+ * character takes two, as on screen.
+ */
 export const SRT_LIMITS = {
   charsPerLine: 42,
   maxLines: 2,
-  /** Target maximum characters per cue (including the "Speaker: " prefix). */
+  /** Target maximum columns per cue (including the "Speaker: " prefix). */
   charsPerCue: 84,
   /** Target maximum cue duration. */
   maxCueMs: 7000,
@@ -19,76 +22,203 @@ interface Cue {
   /** Text without the speaker prefix. */
   text: string;
   speaker: string;
+  rtl: boolean;
 }
 
-const SENTENCE_BREAK = /(?<=[.!?…])\s+|(?<=[。！？])/u;
+/** A stretch of text, [start, end) in its string, that is not broken further. */
+interface Unit {
+  start: number;
+  end: number;
+  width: number;
+}
 
-/** Splits text into pieces of at most `max` characters, preferring word boundaries. */
-function splitByLength(text: string, max: number): string[] {
-  const words = text.split(/\s+/).filter(Boolean);
-  const pieces: string[] = [];
-  let current = '';
-  const pushHard = (word: string) => {
-    // A single "word" longer than the limit (or text without spaces, e.g. CJK) is cut hard.
-    for (let i = 0; i < word.length; i += max) pieces.push(word.slice(i, i + max));
-  };
-  for (const word of words) {
-    if (word.length > max) {
-      if (current) pieces.push(current);
-      current = '';
-      pushHard(word);
-      // Keep the last hard-cut fragment open so following words can join it.
-      current = pieces.pop() ?? '';
-      continue;
-    }
-    if (!current) current = word;
-    else if (current.length + 1 + word.length <= max) current += ` ${word}`;
-    else {
-      pieces.push(current);
-      current = word;
+const CLOSERS = `"'”’»)）」』】〉》`;
+
+/**
+ * Where sentences end: after . ! ? … and a space, or after the stops of other scripts, which need
+ * no space: Arabic ؟, Urdu ۔, Devanagari । ॥, Armenian ։, Ethiopic ።, Myanmar ။, Khmer ។ and
+ * Chinese/Japanese 。！？. Closing quotes and brackets stay with their sentence.
+ */
+const SENTENCE_BREAK = new RegExp(
+  `(?<=[.!?…][${CLOSERS}]*)\\s+|(?<=[؟۔।॥։።။។。！？][${CLOSERS}]*)(?![${CLOSERS}])\\s*`,
+  'gu',
+);
+
+/** Scripts written without spaces between words: broken into words by the platform's dictionaries. */
+const UNSPACED =
+  /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}\p{scx=Tibetan}]/u;
+
+/** Opening brackets and quotes, which stay with the word after them ("「直」" is not cut after "「"). */
+const OPENING = /^[\p{Ps}\p{Pi}]+$/u;
+
+/** Characters two columns wide: Chinese, Japanese and Korean script, full-width forms, emoji. */
+const WIDE =
+  /(?![\uff61-\uffdc\uffe8-\uffee])[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\u3000-\u303f\uff01-\uff60\uffe0-\uffe6\p{Emoji_Presentation}]/gu;
+
+/** Marks and format characters, drawn on or between other characters: no width of their own. */
+const ZERO_WIDTH = /[\p{M}\p{Cf}]/gu;
+
+let segmenters: { grapheme: Intl.Segmenter; word: Intl.Segmenter } | null | undefined;
+
+/** Intl.Segmenter, where the platform has it (all current browsers and Node). */
+function getSegmenters() {
+  if (segmenters === undefined) {
+    segmenters =
+      typeof Intl.Segmenter === 'function'
+        ? { grapheme: new Intl.Segmenter(), word: new Intl.Segmenter(undefined, { granularity: 'word' }) }
+        : null;
+  }
+  return segmenters;
+}
+
+/** User-perceived characters: a Thai or Hindi letter with its marks, a surrogate pair, an emoji. */
+function graphemes(text: string): string[] {
+  const s = getSegmenters();
+  return s ? Array.from(s.grapheme.segment(text), (g) => g.segment) : [...text];
+}
+
+/** Columns the text takes on screen: characters, not UTF-16 units; marks none, wide ones two. */
+export function textWidth(text: string): number {
+  // Latin, Greek and Cyrillic without combining marks: one column per code unit.
+  if (!/[^\u0000-\u02ff\u0370-\u052f]/.test(text)) return text.length;
+  const count = (re: RegExp) => text.match(re)?.length ?? 0;
+  return text.length - count(/[\uD800-\uDBFF]/g) - count(ZERO_WIDTH) + count(WIDE);
+}
+
+/** Words of a piece of text without spaces, with punctuation attached to them, as [start, end). */
+function wordRanges(text: string): [number, number][] {
+  const s = getSegmenters();
+  if (!s) {
+    let at = 0;
+    return [...text].map((c): [number, number] => [at, (at += c.length)]);
+  }
+  const out: [number, number][] = [];
+  let open = -1;
+  for (const { segment, index, isWordLike } of s.word.segment(text)) {
+    if (!isWordLike && OPENING.test(segment)) {
+      if (open < 0) open = index;
+    } else if (!isWordLike && open < 0 && out.length) {
+      // Closing punctuation ("。", "」") never starts a line.
+      out[out.length - 1]![1] = index + segment.length;
+    } else {
+      out.push([open < 0 ? index : open, index + segment.length]);
+      open = -1;
     }
   }
-  if (current) pieces.push(current);
+  if (open >= 0) out.push([open, text.length]);
+  return out;
+}
+
+/** Where text may be broken: at spaces, and between the words of text written without them. */
+function words(text: string): Unit[] {
+  const out: Unit[] = [];
+  const add = (start: number, end: number) =>
+    out.push({ start, end, width: textWidth(text.slice(start, end)) });
+  for (const m of text.matchAll(/\S+/g)) {
+    if (UNSPACED.test(m[0])) for (const [s, e] of wordRanges(m[0])) add(m.index + s, m.index + e);
+    else add(m.index, m.index + m[0].length);
+  }
+  return out;
+}
+
+/** The units, each one wider than `max` cut between its parts (a URL's) or else its characters. */
+function fit(text: string, units: Unit[], max: number): Unit[] {
+  const out: Unit[] = [];
+  for (const u of units) {
+    if (u.width <= max) {
+      out.push(u);
+      continue;
+    }
+    for (const [s, e] of wordRanges(text.slice(u.start, u.end))) {
+      let piece: Unit = { start: u.start + s, end: u.start + s, width: 0 };
+      // Between characters, never inside one: that would orphan a mark or half a surrogate pair.
+      for (const g of graphemes(text.slice(u.start + s, u.start + e))) {
+        const w = textWidth(g);
+        if (piece.width + w > max && piece.end > piece.start) {
+          out.push(piece);
+          piece = { start: piece.end, end: piece.end, width: 0 };
+        }
+        piece.end += g.length;
+        piece.width += w;
+      }
+      out.push(piece);
+    }
+  }
+  return out;
+}
+
+/** Greedily packs units into pieces at most `max` wide; a space between units counts one column. */
+function pack(items: Unit[], max: number): [number, number][] {
+  const pieces: [number, number][] = [];
+  let piece: [number, number] | null = null;
+  let width = 0;
+  for (const u of items) {
+    const gap = piece && u.start > piece[1] ? 1 : 0;
+    if (piece && width + gap + u.width <= max) {
+      piece[1] = u.end;
+      width += gap + u.width;
+    } else {
+      if (piece) pieces.push(piece);
+      piece = [u.start, u.end];
+      width = u.width;
+    }
+  }
+  if (piece) pieces.push(piece);
   return pieces;
 }
 
+/**
+ * Splits text into pieces at most `max` columns wide, at spaces or between words (Chinese,
+ * Japanese and Thai have no spaces), as [start, end) ranges: joined pieces read as the text did.
+ */
+function splitRanges(text: string, max: number, units = words(text)): [number, number][] {
+  return pack(fit(text, units, max), max);
+}
+
 /** Breaks a row's text into cue-sized chunks at sentence boundaries where possible. */
-function chunkText(text: string, maxChars: number, maxChunks: number): string[] {
+function chunkText(text: string, maxWidth: number, maxChunks: number): string[] {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (!flat) return [];
-  const pieces = flat
-    .split(SENTENCE_BREAK)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .flatMap((s) => (s.length > maxChars ? splitByLength(s, maxChars) : [s]));
-
-  // Greedily pack sentences into chunks up to maxChars.
-  let chunks: string[] = [];
-  for (const piece of pieces) {
-    const last = chunks[chunks.length - 1];
-    if (last != null && last.length + 1 + piece.length <= maxChars)
-      chunks[chunks.length - 1] = `${last} ${piece}`;
-    else chunks.push(piece);
+  const sentences: Unit[] = [];
+  const addSentence = (start: number, end: number) => {
+    if (end <= start) return;
+    const width = textWidth(flat.slice(start, end));
+    if (width <= maxWidth) sentences.push({ start, end, width });
+    else {
+      for (const [s, e] of splitRanges(flat.slice(start, end), maxWidth)) {
+        sentences.push({
+          start: start + s,
+          end: start + e,
+          width: textWidth(flat.slice(start + s, start + e)),
+        });
+      }
+    }
+  };
+  let at = 0;
+  for (const m of flat.matchAll(SENTENCE_BREAK)) {
+    addSentence(at, m.index);
+    at = m.index + m[0].length;
   }
+  addSentence(at, flat.length);
+
+  // Greedily pack sentences into chunks up to maxWidth.
+  let chunks = pack(sentences, maxWidth);
 
   // A short row can't hold many readable cues: re-pack into fewer, larger chunks.
   if (chunks.length > maxChunks) {
-    const target = Math.ceil(flat.length / maxChunks);
-    const repacked: string[] = [];
-    for (const piece of splitByLength(flat, target)) {
-      const last = repacked[repacked.length - 1];
-      if (last != null && repacked.length >= maxChunks) repacked[repacked.length - 1] = `${last} ${piece}`;
-      else repacked.push(piece);
+    chunks = splitRanges(flat, Math.ceil(textWidth(flat) / maxChunks));
+    if (chunks.length > maxChunks) {
+      chunks.splice(maxChunks - 1, Infinity, [chunks[maxChunks - 1]![0], flat.length]);
     }
-    chunks = repacked;
   }
-  return chunks;
+  return chunks.map(([s, e]) => flat.slice(s, e));
 }
 
 function rowToCues(row: ExportRow): Cue[] {
-  const prefixLength = row.speakerName.length + 2;
-  const maxChars = Math.max(30, SRT_LIMITS.charsPerCue - prefixLength);
+  const prefixWidth = textWidth(row.speakerName) + 2;
+  const maxChars = Math.max(30, SRT_LIMITS.charsPerCue - prefixWidth);
   const text = row.text.trim();
+  const rtl = isRtlText(text, row.lang);
   let span = row.endMs - row.startMs;
   if (span <= 0) {
     // Zero-length rows still need to be on screen long enough to read; the overlap pass trims this.
@@ -101,7 +231,7 @@ function rowToCues(row: ExportRow): Cue[] {
   if (chunks.length < minChunksByDuration && chunks.length > 0) {
     const finer = chunkText(
       text,
-      Math.max(20, Math.ceil(text.length / minChunksByDuration)),
+      Math.max(20, Math.ceil(textWidth(text) / minChunksByDuration)),
       maxChunksByDuration,
     );
     if (finer.length > chunks.length) chunks = finer;
@@ -114,18 +244,16 @@ function rowToCues(row: ExportRow): Cue[] {
     consumed += chunk.length;
     const endMs =
       i === chunks.length - 1 ? row.startMs + span : row.startMs + Math.round((span * consumed) / total);
-    cues.push({ startMs, endMs, text: chunk, speaker: row.speakerName });
+    cues.push({ startMs, endMs, text: chunk, speaker: row.speakerName, rtl });
   });
   return cues;
 }
 
 /** Greedy word wrap; tries slightly wider lines when that avoids a third line. */
 export function wrapCueText(text: string): string[] {
-  const wrap = (width: number) => {
-    const lines: string[] = [];
-    for (const piece of splitByLength(text, width)) lines.push(piece);
-    return lines;
-  };
+  const units = words(text);
+  const wrap = (width: number) =>
+    splitRanges(text, width, units).map(([s, e]) => text.slice(s, e).replace(/\s+/g, ' '));
   const standard = wrap(SRT_LIMITS.charsPerLine);
   if (standard.length <= SRT_LIMITS.maxLines) return standard;
   for (let width = SRT_LIMITS.charsPerLine + 1; width <= SRT_LIMITS.charsPerLine + 18; width++) {
@@ -157,11 +285,15 @@ function resolveTiming(cues: Cue[]): Cue[] {
   return sorted;
 }
 
-/** SubRip subtitles. Each cue's first line is prefixed with "Speaker: ". Rows without text are skipped. */
+/**
+ * SubRip subtitles. Each cue's first line is prefixed with "Speaker: ". Rows without text are
+ * skipped. Lines of right-to-left rows start with a right-to-left mark: players lay out each line
+ * by its first letter, which would otherwise be the speaker name's.
+ */
 export function toSrt(rows: ExportRow[]): string {
   const cues = resolveTiming(rows.filter((r) => r.text.trim() !== '').flatMap(rowToCues));
   const blocks = cues.map((cue, i) => {
-    const lines = wrapCueText(`${cue.speaker}: ${cue.text}`);
+    const lines = wrapCueText(`${cue.speaker}: ${cue.text}`).map((line) => (cue.rtl ? RLM + line : line));
     return `${i + 1}\r\n${formatSrtTimestamp(cue.startMs)} --> ${formatSrtTimestamp(cue.endMs)}\r\n${lines.join('\r\n')}`;
   });
   return blocks.length ? `${blocks.join('\r\n\r\n')}\r\n` : '';

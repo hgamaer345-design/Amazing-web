@@ -1,6 +1,10 @@
 import { defaultSpeakerName, makeId } from '../shared/speakers';
+import { joinText } from '../shared/text';
 import type { Speaker, TranscriptRow } from '../shared/types';
 import type { ProviderSegment } from './providers/types';
+
+/** A provider segment, or the in-browser engine's, which also says what language it is in. */
+type Segment = ProviderSegment & { lang?: string | null };
 
 function normalizeText(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
@@ -11,12 +15,13 @@ function toMs(value: number): number {
 }
 
 /**
- * Turns provider segments into speakers + rows. A new row starts every time the speaker
- * changes; consecutive segments from the same speaker are merged into a single row.
+ * Turns provider segments into speakers + rows. A new row starts every time the speaker (or the
+ * segment's language) changes; consecutive segments from the same speaker are merged into a
+ * single row, which carries their language when they have one.
  * Speakers are numbered in order of first appearance ("Speaker 1", "Speaker 2", …).
  * A segment without a speaker label continues the previous speaker.
  */
-export function buildDocument(segments: ProviderSegment[]): { speakers: Speaker[]; rows: TranscriptRow[] } {
+export function buildDocument(segments: Segment[]): { speakers: Speaker[]; rows: TranscriptRow[] } {
   const cleaned = segments
     .map((s, index) => ({ ...s, text: normalizeText(s.text ?? ''), index }))
     .filter((s) => s.text.length > 0)
@@ -44,12 +49,16 @@ export function buildDocument(segments: ProviderSegment[]): { speakers: Speaker[
     const speaker: Speaker = label != null ? speakerFor(label) : (previous ?? speakerFor('__unlabelled__'));
     const startMs = toMs(seg.startMs);
     const endMs = Math.max(startMs, toMs(seg.endMs));
+    const lang = seg.lang || undefined;
     const last = rows[rows.length - 1];
-    if (last && last.speakerId === speaker.id) {
-      last.text = `${last.text} ${seg.text}`;
+    if (last && last.speakerId === speaker.id && last.lang === lang) {
+      // No space between pieces of Chinese or Japanese (provider words come one by one).
+      last.text = joinText(last.text, seg.text);
       last.endMs = Math.max(last.endMs, endMs);
     } else {
-      rows.push({ id: makeId('row'), speakerId: speaker.id, startMs, endMs, text: seg.text });
+      const row: TranscriptRow = { id: makeId('row'), speakerId: speaker.id, startMs, endMs, text: seg.text };
+      if (lang) row.lang = lang;
+      rows.push(row);
     }
     previous = speaker;
   }

@@ -33,7 +33,7 @@ const utf8 = (text: string) => new TextEncoder().encode(text);
  * row so "#" matches the table in the app; TXT and SRT skip rows that have no text.
  */
 export async function renderExport(format: ExportFormat, input: ExportInput): Promise<RenderedExport> {
-  const rows = buildExportRows(input.document);
+  const rows = buildExportRows(input.document, input.languageCode);
   switch (format) {
     case 'csv':
       return { bytes: utf8(toCsv(rows)), contentType: 'text/csv; charset=utf-8', fileExtension: 'csv' };

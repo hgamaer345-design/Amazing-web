@@ -2,7 +2,14 @@ import ExcelJS from 'exceljs';
 import { speakerColor } from '../speakers';
 import { formatDuration } from '../time';
 import type { ExportInput } from './render';
-import { formatCreated, languageLabel, speakersInOrder, type ExportRow } from './common';
+import {
+  formatCreated,
+  isRtlText,
+  isRtlTranscript,
+  languagesField,
+  speakersInOrder,
+  type ExportRow,
+} from './common';
 
 /** Excel refuses to open cells longer than this. */
 export const XLSX_MAX_CELL_CHARS = 32_767;
@@ -26,6 +33,15 @@ function splitForCells(text: string): string[] {
   return pieces;
 }
 
+/** Excel's default reading order follows the first letter: Arabic starting "iPhone" would read LTR. */
+function readingOrder(text: string, lang: string | null): Partial<ExcelJS.Alignment> {
+  return isRtlText(text, lang) ? { readingOrder: 'rtl' } : {};
+}
+
+/**
+ * Excel workbook: a Transcript sheet (one row per transcript row) and an Info sheet. The sheet runs
+ * right to left when the transcript does, and Arabic, Hebrew, … cells read right to left.
+ */
 export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Uint8Array> {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'Speaker Transcriber';
@@ -33,7 +49,8 @@ export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Uin
   if (!Number.isNaN(created.getTime())) wb.created = created;
   wb.title = input.title;
 
-  const ws = wb.addWorksheet('Transcript', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const rightToLeft = isRtlTranscript(rows, input.languageCode);
+  const ws = wb.addWorksheet('Transcript', { views: [{ state: 'frozen', ySplit: 1, rightToLeft }] });
   ws.columns = [
     { header: '#', key: 'number', width: 6 },
     { header: 'Speaker', key: 'speaker', width: 22 },
@@ -50,12 +67,15 @@ export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Uin
   });
 
   for (const r of rows) {
+    const textOrder = readingOrder(r.text, r.lang);
+    const speakerOrder = readingOrder(r.speakerName, null);
     // Rows longer than one Excel cell continue on extra lines with the same number/speaker/times.
     for (const text of splitForCells(r.text)) {
       // Values are written as plain strings, so text like "=1+1" is never evaluated as a formula.
       const row = ws.addRow({ number: r.number, speaker: r.speakerName, start: r.start, end: r.end, text });
       row.alignment = { vertical: 'top' };
-      row.getCell('text').alignment = { vertical: 'top', wrapText: true };
+      row.getCell('text').alignment = { vertical: 'top', wrapText: true, ...textOrder };
+      row.getCell('speaker').alignment = { vertical: 'top', ...speakerOrder };
       row.getCell('speaker').font = {
         bold: true,
         ...(r.colorIndex != null ? { color: { argb: argb(speakerColor(r.colorIndex).base) } } : {}),
@@ -75,7 +95,7 @@ export async function toXlsx(rows: ExportRow[], input: ExportInput): Promise<Uin
     ['Original file', input.originalFilename],
     ['Created', formatCreated(input.createdAt)],
     ['Duration', formatDuration(input.durationSec)],
-    ['Language', languageLabel(input.languageCode)],
+    languagesField(rows, input.languageCode),
     ['Speakers', speakers.length ? speakers.join(', ') : '—'],
     ['Rows', String(rows.length)],
   ];
