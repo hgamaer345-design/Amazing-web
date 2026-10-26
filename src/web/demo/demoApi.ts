@@ -5,6 +5,7 @@
 import { buildDocument } from '../../server/segmentation';
 import { findDocumentProblems } from '../../shared/document';
 import { ERROR_MESSAGES } from '../../shared/errors';
+import { isWhisperLanguage } from '../../shared/languages';
 import {
   DEFAULT_QUALITY_MODE,
   DEFAULT_ULTRA_DAILY_LIMIT,
@@ -27,13 +28,14 @@ import {
   type TranscriptDetail,
   type TranscriptDocument,
   type TranscriptError,
+  type TranscriptRow,
   type TranscriptStatus,
   type TranscriptSummary,
   type UsageResponse,
 } from '../../shared/types';
 import { ApiError } from '../apiError';
 import type { SpeechEngine } from './speech/engine';
-import type { SpeechProgress } from './speech/protocol';
+import type { SpeechProgress, SpeechSegment, SpeechStage } from './speech/protocol';
 import { LITE_DEVICE } from './device';
 import { getDemoStore, type DemoRecord } from './store';
 
@@ -69,8 +71,14 @@ const BROWSER_MODES: Record<QualityMode, Pick<QualityModeInfo, 'tagline' | 'desc
   },
 };
 
+/** Speech in other languages gets the model that suits it (see speech/routing.ts). */
+const LANGUAGES_NOTE =
+  ' Other languages than English may use a larger model made for them, downloaded the first time.';
 /** On phones, the larger models can exhaust the memory a browser tab is allowed. */
 const PHONE_NOTE = ' On a phone it can run out of memory: Standard is recommended here.';
+/** Phones never run Whisper Small (speech/routing.ts LITE_MAX_WHISPER). */
+const PHONE_ULTRA_NOTE =
+  ' On a phone it uses Whisper Base, as Whisper Small needs more memory than a phone gives a web page.';
 
 export const DEMO_CONFIG: AppConfigResponse = {
   provider: 'mock',
@@ -82,7 +90,9 @@ export const DEMO_CONFIG: AppConfigResponse = {
   demoMode: true,
   qualityModes: qualityModeInfo(LIMITS).map((m) => {
     const info = { ...m, ...BROWSER_MODES[m.id] };
-    if (LITE_DEVICE && m.id !== 'standard') info.description += PHONE_NOTE;
+    info.description += LANGUAGES_NOTE;
+    if (LITE_DEVICE && m.id !== 'standard')
+      info.description += m.id === 'ultra' ? PHONE_ULTRA_NOTE : PHONE_NOTE;
     return info;
   }),
   // Whisper Tiny is the one that comfortably fits a phone's memory.
@@ -180,11 +190,57 @@ interface LiveJob {
   progress: SpeechProgress;
   /** When the measurable part (speaker analysis onwards) began, for the ETA. */
   measuredSince: number | null;
+  /**
+   * Model loading after that (another language's model, mid-job): ongoing since `pausedAt`, and
+   * the time it took so far. Download time says nothing about how long the rest takes.
+   */
+  pausedAt: number | null;
+  pausedMs: number;
+  /** Where the current stage began, in measured time and job fraction. */
+  phase: { stage: SpeechStage; atMs: number; fraction: number } | null;
   /** Remaining time estimated at the last progress report, counted down in between. */
   eta: { seconds: number; at: number } | null;
   cancelled: boolean;
   /** Stops the engine once it is running. */
   stop: (() => void) | null;
+}
+
+/**
+ * Seconds left of a job `fraction` done after `activeMs` of measured time, or null when too
+ * little is known. Once the current stage has moved 5 % of the job, its own pace is used: how
+ * fast transcription goes depends on the models the recording's languages need, which speaker
+ * analysis says nothing about.
+ */
+export function estimateRemaining(
+  activeMs: number,
+  fraction: number,
+  phase: { atMs: number; fraction: number } | null,
+): number | null {
+  if (!(fraction > 0.03 && fraction < 1) || activeMs <= 0) return null;
+  if (phase && fraction - phase.fraction >= 0.05 && activeMs > phase.atMs) {
+    return ((activeMs - phase.atMs) / 1000 / (fraction - phase.fraction)) * (1 - fraction);
+  }
+  return (activeMs / 1000 / fraction) * (1 - fraction);
+}
+
+/** Updates a job's clock and ETA from a progress report. */
+function track(job: LiveJob, progress: SpeechProgress, now: number): void {
+  job.progress = progress;
+  if (progress.stage === 'loading') {
+    if (job.measuredSince != null && job.pausedAt == null) job.pausedAt = now;
+    return;
+  }
+  job.measuredSince ??= now;
+  if (job.pausedAt != null) {
+    job.pausedMs += now - job.pausedAt;
+    job.pausedAt = null;
+  }
+  const f = progress.fraction;
+  if (f == null) return;
+  const active = now - job.measuredSince - job.pausedMs;
+  if (job.phase?.stage !== progress.stage) job.phase = { stage: progress.stage, atMs: active, fraction: f };
+  const seconds = estimateRemaining(active, f, job.phase);
+  if (seconds != null) job.eta = { seconds, at: now };
 }
 
 /**
@@ -354,6 +410,9 @@ async function processJob(picked: DemoRecord): Promise<void> {
   const entry: LiveJob = {
     progress: { stage: 'loading', message: 'Starting…', fraction: null },
     measuredSince: null,
+    pausedAt: null,
+    pausedMs: 0,
+    phase: null,
     eta: null,
     cancelled: false,
     stop: null,
@@ -393,20 +452,19 @@ async function processJob(picked: DemoRecord): Promise<void> {
       if (entry.cancelled) return;
       const job = engine.run(
         audio,
-        { quality: claimed.quality, speakersExpected: claimed.speakersExpected, lite: LITE_DEVICE },
-        (progress) => {
-          entry.progress = progress;
-          const now = Date.now();
-          if (progress.stage !== 'loading' && entry.measuredSince == null) entry.measuredSince = now;
-          const f = progress.fraction;
-          if (entry.measuredSince != null && f != null && f > 0.03 && f < 1) {
-            entry.eta = { seconds: ((now - entry.measuredSince) / 1000 / f) * (1 - f), at: now };
-          }
+        {
+          quality: claimed.quality,
+          speakersExpected: claimed.speakersExpected,
+          language: claimed.requestedLanguage ?? null,
+          lite: LITE_DEVICE,
         },
+        (progress) => track(entry, progress, Date.now()),
       );
       entry.stop = job.cancel;
       const result = await job.promise;
-      const { speakers, rows } = buildDocument(result.segments);
+      const built = buildDocument(result.segments);
+      const speakers = built.speakers;
+      const rows = withRowLanguages(built.rows, result.segments, result.languageCode);
       if (rows.length === 0) {
         await finish(id, runId, { status: 'error', error: jobError('NO_SPEECH') });
         return;
@@ -433,6 +491,66 @@ async function processJob(picked: DemoRecord): Promise<void> {
     if (currentRun) closedNormally(currentRun); // clears a marker left by a bfcache pagehide
     currentRun = null;
   }
+}
+
+const overlapMs = (a: { startMs: number; endMs: number }, b: { startMs: number; endMs: number }) =>
+  Math.max(0, Math.min(a.endMs, b.endMs) - Math.max(a.startMs, b.startMs));
+
+function argmax(totals: Map<string, number>): string | null {
+  let best: string | null = null;
+  for (const [key, value] of totals) if (best === null || value > totals.get(best)!) best = key;
+  return best;
+}
+
+/**
+ * Gives every row its language when the transcript has more than one (speakers in different
+ * languages): the language of most of that speaker's speech in the row. With a single language
+ * rows carry none, as before: absent means the transcript's languageCode, so such documents (and
+ * every older one) stay exactly as they were, and only mixed ones need a per-row language.
+ */
+export function withRowLanguages(
+  rows: TranscriptRow[],
+  segments: readonly SpeechSegment[],
+  languageCode: string | null,
+): TranscriptRow[] {
+  const languages = new Set(segments.flatMap((s) => (s.lang && s.text.trim() ? [s.lang] : [])));
+  if (languages.size <= 1) return rows;
+  // Which speaker each engine label became (buildDocument numbers speakers itself): the one whose
+  // rows its segments match best (intersection over union, so a short reply inside someone else's
+  // long turn still matches its own row).
+  const votes = new Map<string, Map<string, number>>();
+  for (const s of segments) {
+    const byRow = votes.get(s.speaker) ?? new Map<string, number>();
+    votes.set(s.speaker, byRow);
+    for (const r of rows) {
+      const o = overlapMs(s, r);
+      const union = s.endMs - s.startMs + (r.endMs - r.startMs) - o;
+      if (o > 0) byRow.set(r.speakerId, (byRow.get(r.speakerId) ?? 0) + o / union);
+    }
+  }
+  const speakerOf = new Map([...votes].map(([label, byRow]) => [label, argmax(byRow)]));
+  return rows.map((row) => {
+    const totals = new Map<string, number>();
+    for (const s of segments) {
+      if (!s.lang || speakerOf.get(s.speaker) !== row.speakerId) continue;
+      const o = overlapMs(s, row);
+      if (o > 0) totals.set(s.lang, (totals.get(s.lang) ?? 0) + o);
+    }
+    const lang = argmax(totals) ?? languageCode;
+    return lang ? { ...row, lang } : row;
+  });
+}
+
+/**
+ * The language the user chose for a recording (ISO 639-1 as Whisper spells it, or "yue" for
+ * Cantonese), or null to detect it; "auto" and "" also mean detect.
+ */
+export function parseRequestedLanguage(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const code = value.trim().toLowerCase();
+  if (code === '' || code === 'auto') return null;
+  if (isWhisperLanguage(code) || code === 'yue') return code;
+  fail('INVALID_INPUT', 'Unknown language.');
 }
 
 /** What to tell the user for each way the in-browser engine can fail. */
@@ -534,6 +652,7 @@ function toSummary(rec: DemoRecord): TranscriptSummary {
     provider: 'mock',
     quality: rec.quality,
     languageCode: rec.languageCode,
+    requestedLanguage: rec.requestedLanguage ?? null,
     speakersExpected: rec.speakersExpected,
     speakerCount: rec.document?.speakers.length ?? null,
     rowCount: rec.document?.rows.length ?? null,
@@ -554,6 +673,8 @@ async function toDetail(rec: DemoRecord): Promise<TranscriptDetail> {
   let etaSeconds: number | null = summary.status === 'done' || summary.status === 'error' ? 0 : null;
   const fraction = job?.progress.fraction ?? null;
   if (job?.eta) etaSeconds = Math.max(1, Math.round(job.eta.seconds - (now - job.eta.at) / 1000));
+  // A model downloading mid-job: its message shows the bytes, the time left is unknown until it runs.
+  if (job?.pausedAt != null) etaSeconds = null;
   let queuePosition: number | null = null;
   if (summary.status === 'queued') {
     const queued = (await (await getDemoStore()).all()).filter((r) => r.status === 'queued');
@@ -762,7 +883,10 @@ export interface DemoUploadOptions {
   keepAudio: boolean;
   clientDurationSec: number | null;
   quality?: QualityMode;
-  /** Language of the recording (ISO 639-1); null/absent = detect per speaker. */
+  /**
+   * Language of the recording (ISO 639-1 from WHISPER_LANGUAGES, or "yue"); null, absent or "auto"
+   * = detect per speaker. Anything else is rejected (INVALID_INPUT).
+   */
   language?: string | null;
 }
 
@@ -791,6 +915,7 @@ export function uploadTranscript(
       }
       const quality = options.quality ?? DEFAULT_QUALITY_MODE;
       if (!isQualityMode(quality)) fail('INVALID_INPUT', 'Unknown quality mode.');
+      const requestedLanguage = parseRequestedLanguage(options.language);
       if ((options.clientDurationSec ?? 0) > MAX_DEMO_DURATION_SEC) {
         fail(
           'FILE_TOO_LARGE',
@@ -840,6 +965,7 @@ export function uploadTranscript(
         completedAt: null,
         attempts: 0,
         runId: null,
+        requestedLanguage,
         languageCode: null,
         error: null,
         document: null,

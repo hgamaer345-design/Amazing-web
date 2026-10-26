@@ -91,6 +91,46 @@ export function speechSample(
 }
 
 /**
+ * Up to `maxSeconds` of speech for language detection, taken in `pieces` equal parts from the
+ * start, the middle and the end of the turns' speech rather than all from the start: a recording
+ * often opens with music, a jingle or a name that says little about the language (a French news
+ * programme whose first 30 s are music was detected as English). Same as `speechSample` when
+ * there is no more speech than that.
+ */
+export function spreadSample(
+  audio: Float32Array,
+  turns: Turn[],
+  maxSeconds = 30,
+  pieces = 3,
+  sampleRate = 16000,
+): Float32Array {
+  const total = turns.reduce((n, t) => n + (t.end - t.start), 0);
+  const limit = maxSeconds * sampleRate;
+  if (total <= limit || pieces < 2) return speechSample(audio, turns, maxSeconds, sampleRate);
+  const piece = Math.floor(limit / pieces);
+  const out = new Float32Array(piece * pieces);
+  for (let k = 0; k < pieces; k++) {
+    // Offsets into the speech with the turns laid end to end.
+    let from = Math.round((k * (total - piece)) / (pieces - 1));
+    let pos = k * piece;
+    const end = pos + piece;
+    for (const t of turns) {
+      const length = t.end - t.start;
+      if (from >= length) {
+        from -= length;
+        continue;
+      }
+      const take = Math.min(length - from, end - pos);
+      out.set(audio.subarray(t.start + from, t.start + from + take), pos);
+      pos += take;
+      from = 0;
+      if (pos >= end) break;
+    }
+  }
+  return out;
+}
+
+/**
  * Splits turns longer than `maxSeconds` (Whisper hears 30 s at a time) into pieces, cutting at
  * the quietest moment in the last `searchSeconds` before each limit so words aren't cut in half.
  * Pieces keep their speaker; the rows are merged again when the document is built.

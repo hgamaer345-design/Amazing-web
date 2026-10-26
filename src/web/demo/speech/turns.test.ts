@@ -1,4 +1,4 @@
-import { planTurns, speechSample, splitLongTurns } from './turns';
+import { planTurns, speechSample, splitLongTurns, spreadSample } from './turns';
 
 const seg = (start: number, end: number, speaker: number) => ({ start, end, speaker });
 
@@ -25,6 +25,26 @@ describe('planTurns', () => {
 
   it('returns nothing for no segments', () => {
     expect(planTurns([], 1000)).toEqual([]);
+  });
+});
+
+describe('spreadSample', () => {
+  const audio = Float32Array.from({ length: 1000 }, (_, i) => i);
+  const turns = [
+    { speaker: 0, start: 0, end: 300 },
+    { speaker: 0, start: 500, end: 800 },
+  ];
+
+  it('takes equal parts from the start, middle and end of the speech', () => {
+    // 600 samples of speech, 30 wanted: 10 at speech offsets 0, 295 and 590.
+    const out = spreadSample(audio, turns, 30, 3, 1);
+    expect(Array.from(out.subarray(0, 10))).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(Array.from(out.subarray(10, 20))).toEqual([295, 296, 297, 298, 299, 500, 501, 502, 503, 504]);
+    expect(Array.from(out.subarray(20, 30))).toEqual([790, 791, 792, 793, 794, 795, 796, 797, 798, 799]);
+  });
+
+  it('is all of the speech when there is little', () => {
+    expect(spreadSample(audio, turns, 1000, 3, 1)).toEqual(speechSample(audio, turns, 1000, 1));
   });
 });
 

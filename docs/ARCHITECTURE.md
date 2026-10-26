@@ -117,7 +117,7 @@ process); everything goes through SQLite, so nothing else changes.
 
 - Drop segments whose trimmed text is empty. Sort by `startMs` (stable).
 - Map raw labels to speakers in order of first appearance: first label → `{ id: 'spk_1', name: 'Speaker 1',
-  colorIndex: 0 }`, second → `spk_2`/`Speaker 2`/1, … A `null` label continues the previous segment's
+colorIndex: 0 }`, second → `spk_2`/`Speaker 2`/1, … A `null` label continues the previous segment's
   speaker (or `spk_1` if it is the first).
 - **A new row starts each time the speaker changes; consecutive segments from the same speaker are
   merged into one row** (text joined with a single space, whitespace normalised, `startMs` of the
@@ -314,18 +314,27 @@ the device in `src/web/demo/speech/`:
 ```
 engine.ts          page side: decode the file to 16 kHz mono (OfflineAudioContext), talk to the worker,
                    cancel = terminate the worker
-speech.worker.ts   load models → diarize → plan turns (≤ 28 s clips) → detect language → Whisper per clip
+speech.worker.ts   load models → diarize → plan turns (≤ 28 s clips) → detect each speaker's language →
+                   transcribe the turns grouped by model (routing.ts), each model loaded once
+routing.ts         which model transcribes which language (FLEURS error rates), speaker-language rules,
+                   progress weights; pure
+recognizer.ts      the contract every speech-to-text model meets (Whisper, SenseVoice, Omnilingual ASR)
 diarize.ts         based on sherpa-onnx's pyannote pipeline: segmentation-3.0 on 10 s windows (powerset →
                    3 local speakers), WeSpeaker embeddings, clustering (cluster.ts: Ward linkage plus
                    clean-up; complete linkage for short files), overlap-add, min on/off durations —
                    with the changes below
 fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false) + per-segment mean
                    normalisation for WeSpeaker
-turns.ts           speaker turns → padded, merged clips; long turns cut at the quietest point
+turns.ts           speaker turns → padded, merged clips; long turns cut at the quietest point; samples
+                   of speech for language detection
 text.ts            clean-up of Whisper's text (sound tags, lone "you" on noise, repetition loops) and the
                    hallucination checks (silence, loops, unlikely text, "Thank you for watching.")
 models.ts          ONNX Runtime set-up (self-hosted wasm; threads when cross-origin isolated),
-                   model download + Cache API, Whisper via Transformers.js, language detection
+                   speaker models, Whisper via Transformers.js (as a Recognizer), language detection,
+                   loadRecognizer for every model
+sensevoice.ts,     SenseVoice-Small and Omnilingual ASR 300M (CTC, int8), served from <base>/models/
+omnilingual.ts
+download.ts        downloads with byte progress, kept in the Cache API
 onnxOutputs.ts     drops Whisper's unused attention outputs from the model files before loading
 ```
 
@@ -392,8 +401,10 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   GitHub releases (SHA-256 pinned) into `vendor/speech-models/` and served from `<base>/models/`.
   Whisper (`Xenova/whisper-{tiny,base,small}`, q8) comes from the Hugging Face hub.
 - Transformers.js assumes English unless a language is given, so `detectLanguage` runs one decoder
-  step after `<|startoftranscript|>` on up to 30 s of speech and takes the best language token.
-- Quality modes pick the Whisper size; long files use a coarser window hop
+  step after `<|startoftranscript|>` and turns the language tokens' scores into probabilities
+  (softmax over those tokens only, as openai/whisper does); see **Languages** below.
+- Quality modes pick the least Whisper size (other languages may get a larger one, see
+  **Languages**); long files use a coarser window hop
   (`max(2, ceil(minutes / 20))` seconds, at most 5 s so windows still overlap) to bound the work.
 - Whisper always encodes 30 s, so one clip per speaker turn costs a full pass even for a short
   turn. Packing several turns into one pass and splitting the text by timestamps was tried: 1.35×
@@ -426,6 +437,7 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   sentence was dropped; Hindi on Tiny (character error > 100%) loses most clips as unlikely. Not
   done: an energy check (clips > 20 dB below the recording's median turn were all
   hallucinations, but it only removed 5 more words).
+
 - After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
   memory); model errors are reported either as download problems or as "couldn't start" (memory).
 - Memory: the Whisper conversions on the hub also output every layer's attention weights
@@ -439,15 +451,132 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   threads (`SharedArrayBuffer`). Without it everything still works single-threaded.
 - Test fixtures were generated with Python reference implementations (`kaldi-native-fbank` for
   `fbank.json`: 0.3 s of speech with `dither=0, snip_edges=False, window_type="povey",
-  num_bins=80, low_freq=20, high_freq=-400`, input scaled by 32768; `sherpa_onnx.FastClustering` on
+num_bins=80, low_freq=20, high_freq=-400`, input scaled by 32768; `sherpa_onnx.FastClustering` on
   random clustered embeddings for `clusters.json`). The diarization port was checked against
   sherpa-onnx's `OfflineSpeakerDiarization` on a synthesized three-speaker conversation (identical
   turns).
 
+### Languages (in-browser)
+
+Speech in any language is transcribed by the model that suits it; models are downloaded the first
+time a language needs them (Cache API / the hub's cache afterwards).
+
+- **Language per speaker** (`speech.worker.ts` `transcribeTurns`). When the user chose no language
+  (`SpeechJobOptions.language` null; the upload form's "auto"), the quality mode's Whisper detects
+  each speaker's language once, on up to 30 s of that speaker's speech: `spreadSample` takes three
+  10 s parts from the start, middle and end of their turns, since recordings often open with music
+  or a jingle (a French news programme whose first 30 s are music came out as English with every
+  Whisper size). `detectLanguage` returns the code, its probability and the ranked top 5 (softmax
+  over the language tokens). A speaker whose detection is unsure (p < 0.8, `LID_CONFIDENT`) and who
+  said less than 10 s (`LID_MIN_SECONDS`) takes the language detected on the whole recording (run
+  only when some speaker needs it); under 1 s no own detection is tried. Base and Small were right
+  every time they were ≥ 0.8 sure (below); unsure detections on 4–7 s clips were wrong 3 times in 7.
+  A chosen language skips all detection.
+- **Larger-Whisper check**: when a speaker's language sends them to a larger Whisper than the one
+  that detected it (Standard detects with Tiny, then French goes to Small), that model detects the
+  speaker's language again on the same sample once it is loaded (one encoder pass), and if it is
+  ≥ 0.8 sure of another language the speaker's remaining turns move (to that language's model,
+  queued at the end if it wasn't planned). Tiny was sure of Russian for two Ukrainian speakers
+  (p = 0.93 and 0.82); Small corrects them.
+- **Per-turn check**: a Whisper turn of ≥ 3 s whose first decode was doubtful (the hallucination
+  filter decoded it again: a loop, cut off, or average log-probability < -1, which is also what
+  speech in the wrong language looks like) has its language detected again on that turn; if another
+  language wins with p ≥ 0.8 the turn is transcribed in it: by that language's model if its group is
+  still to come (the turn joins it, keeping the first text in case that model finds nothing), else
+  by the current Whisper, keeping that text only if Whisper is surer of it (higher average
+  log-probability; detection says English for music). This catches some turns in another language
+  than their speaker's (a speaker who switches, a diarization mix-up): with every turn of the
+  constructed conversations forced to one wrong language, 7 of 13 wrong-language turns came out
+  doubtful and all 7 were switched to the right language (Base: fr, zh, ar; Small: pl); Russian
+  read as Ukrainian, Spanish as English and one French turn were transcribed confidently and stayed.
+- **Routing** (`routing.ts` `chooseRecognizer(language, quality, lite)`, from Whisper's FLEURS error
+  rates, `FLEURS_WER`): Chinese, Cantonese (only as a chosen language: these Whisper sizes have no
+  Cantonese token, `whisperLanguage` maps it to Chinese), Japanese and Korean → SenseVoice; English →
+  the quality mode's Whisper; other languages → the smallest Whisper with FLEURS WER ≤ 20 % (never
+  Tiny: ≤ 20 % only for English and Spanish, and its detection and hallucination checks are weakest
+  away from English), at least the quality mode's; where even the largest Whisper the device runs
+  stays above 30 % (or FLEURS has no figure, e.g. Basque, Albanian, Latin) → Omnilingual ASR, else
+  that Whisper. On a computer: es/pt/de/it → Base; fr, ru, tr, pl, nl, uk, id, ca, ms and the
+  20–30 % ones (sv, vi, th, fi, no, tl, ro) → Small; ar, hi, fa, he, cs, el, ta, ur, sw, bn, hu, da,
+  gl, … → Omnilingual.
+- **Phones** (`lite`): Whisper is capped at Base (`LITE_MAX_WHISPER`: Base needs about 450 MB of
+  WebAssembly memory; Small, with three times the weights and twice the layers, would not fit the
+  768 MB heap cap, and iOS kills the tab at ~1–1.5 GB), so Ultra High uses Base there and languages
+  where Base exceeds 30 % (pl, nl, id, uk, sv, …) go to Omnilingual. SenseVoice and Omnilingual are
+  allowed on phones (one encoder pass, no decoder cache) behind one switch, `LITE_USES_CTC_MODELS`.
+- **Fallbacks**: a model that can't be loaded (download or start-up error; the SenseVoice and
+  Omnilingual placeholders throw until they are implemented) is replaced by the largest Whisper the
+  device runs, then by the quality mode's Whisper; its turns join that model's group, and the
+  failure is remembered for the rest of the job. Only when the quality mode's Whisper fails is the
+  job an error (MODEL_DOWNLOAD / MODEL_LOAD as before).
+- **Loading**: the first model (the detecting Whisper, or the chosen language's model) loads before
+  speaker analysis so download problems show early. Turns are then transcribed grouped by model:
+  the loaded one first, then the others by amount of speech, each loaded once; results are put
+  back in time order and each segment carries `lang`. Models stay loaded between jobs
+  (`RecognizerShelf`), one Whisper size at a time; on phones only one model of any kind (the
+  previous one is disposed before the next loads). `languageCode` is the language with the most
+  speech.
+- **Progress**: messages say what happens and why ("Detected English (1 speaker) and French
+  (1 speaker) — downloading Whisper Small (34 MB of 249 MB), more accurate for French — only needed
+  once…", "Transcribing French with Whisper Small…", "SenseVoice couldn’t be loaded — using Whisper
+  Small instead…"). The transcription fraction is weighted by each model's cost per second of
+  speech (`RECOGNIZER_COST`: Tiny 1, Base 1.9, Small 4.6 from the Chromium measurements behind
+  `SPEAKERS_SHARE`; SenseVoice ~1 and Omnilingual ~4 from their speed relative to Whisper in
+  onnxruntime-node, one thread: Tiny 182, Base 287, Small 540, Omnilingual 583, SenseVoice ~116 ms
+  per second of audio) and never goes back. Mid-job downloads are reported as stage `loading` with
+  the current fraction; `demoApi` leaves that time out of the ETA (and shows none meanwhile), and
+  once a stage has moved 5 % of the job its own pace sets the ETA (`estimateRemaining`), since how
+  long transcription takes depends on the models the languages need.
+- **API** (`demoApi.ts`): `DemoUploadOptions.language` is validated (`isWhisperLanguage` or "yue";
+  "auto", "" or null = detect; anything else INVALID_INPUT), stored on the record and returned as
+  `TranscriptSummary.requestedLanguage` (older records: null), and passed to the engine. Rows get
+  `lang` only when the transcript has more than one language, and then every row has one (the
+  language of most of that speaker's speech in the row, `withRowLanguages`): absent means the
+  transcript's `languageCode`, so single-language documents, and all older ones, stay exactly as
+  before. buildDocument still merges a speaker's consecutive turns into one row even when their
+  languages differ (the row takes the main one).
+
+Measured in onnxruntime-node with the worker's own code (`transcribeTurns`, `models.ts`; one thread)
+on 80 recordings, 21 min: a 19-language set (FLEURS and other public samples; two constructed
+conversations where each speaker has their own language: ar/en/es/zh with 4 speakers, pl/ru/uk
+with 3) and two more constructed two-speaker, two-language conversations (en+fr 46 s, de+hi 55 s;
+FLEURS speakers alternating, 6 turns). Reference speaker turns unless noted; WER after NFKC,
+lower case and punctuation removal, CER for zh/ja/ko. "CTC" columns use the research prototypes of
+SenseVoice and Omnilingual as stand-ins (until their implementations land, those languages get
+Whisper Small, the other figures).
+
+| Speakers whose language is right (93) | Tiny | Base | Small |
+| ------------------------------------- | ---- | ---- | ----- |
+| one detection per file (before)       | 79   | 85   | 85    |
+| per speaker, spread sample            | 87   | 93   | 93    |
+| + larger-Whisper check                | 91   | 93   | 93    |
+
+In the four mixed-language conversations 4 of 11 speakers were right before, 11 now (every size).
+With real diarization on the seven multi-speaker recordings: 13 of 20 → 19–20. Detections with
+p ≥ 0.8 were right 92/92 (Base), 88/88 (Small), 83/85 (Tiny: two Ukrainian speakers as Russian).
+
+| WER % before → after (CTC)   | Standard           | High               | Ultra High         |
+| ---------------------------- | ------------------ | ------------------ | ------------------ |
+| single-language recordings   | 72.5 → 27.1 (22.8) | 52.3 → 25.8 (21.2) | 32.4 → 22.8 (18.2) |
+| zh/ja/ko (CER)               | 47.3 → 11.8 (7.4)  | 23.3 → 11.8 (7.4)  | 11.8 → 11.8 (7.4)  |
+| mixed-language conversations | 84.0 → 23.5 (21.1) | 60.7 → 19.8 (17.4) | 59.1 → 18.2 (15.8) |
+
+Per language in High (before → Whisper → CTC): French 85 → 23 (a news programme opening with 30 s
+of music had been transcribed as English), Ukrainian 47 → 24, Vietnamese 49 → 14, Arabic 63 → 50
+→ 34, Persian 83 → 53 → 25, Hindi 105 → 51 → 16, Chinese 36 → 26 → 12 and Japanese 30 → 9 → 8
+(CER); English is unchanged (10.0). With real diarization (High) the mixed conversations went from
+62.2 to 21.1 (19.8). A phone (Standard, Whisper capped at Base, CTC models allowed): 30.0 WER,
+7.4 CER. The price is compute for non-English speech: on this mostly non-English set the
+estimated model time (speech seconds × each model's speed) is 2.7× Standard's before (2.1× with
+the CTC models), 1.7× High's (1.4×) and the same for Ultra High (0.83×); English costs the same.
+Not measured: the browser itself (download sizes, memory with several models on a phone), and the
+real SenseVoice/Omnilingual implementations. The French news reference is itself model-made, and
+Chinese CER counts traditional-for-simplified characters as errors.
+
 ## Conventions
 
 - Keep modules focused; match the style of the existing files (2-space indent, single quotes,
-  semicolons, trailing commas, ~110 col). Comments explain *why*, sparingly.
+  semicolons, trailing commas, ~110 col). Comments explain _why_, sparingly.
 - No `any` unless unavoidable. No `console.log` in server code — use `log` from `logger.ts`.
 - User-visible errors use the messages from `src/shared/errors.ts` (or more specific ones).
 - Accessibility: labelled controls, visible focus, keyboard operable menus (Esc closes, focus returns),
