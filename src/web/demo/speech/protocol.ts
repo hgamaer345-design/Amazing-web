@@ -4,6 +4,8 @@ import type { QualityMode } from '../../../shared/types';
 export interface SpeechJobOptions {
   quality: QualityMode;
   speakersExpected: number | null;
+  /** Language the user chose (ISO 639-1, e.g. "fr"); null or absent = detect per speaker. */
+  language?: string | null;
   /** Low-memory device (phone): one thread, capped heap, smaller batches. */
   lite?: boolean;
 }
@@ -24,10 +26,13 @@ export interface SpeechSegment {
   startMs: number;
   endMs: number;
   text: string;
+  /** Language this segment was transcribed in (ISO 639-1). */
+  lang?: string;
 }
 
 export interface SpeechResult {
   segments: SpeechSegment[];
+  /** The language spoken most (segments carry their own). */
   languageCode: string | null;
   durationSec: number;
 }

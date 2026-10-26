@@ -68,6 +68,11 @@ export interface TranscriptRow {
   startMs: number;
   endMs: number;
   text: string;
+  /**
+   * Language of this row's speech (ISO 639-1, e.g. "fr") when known per row, as when speakers use
+   * different languages; absent means the transcript's languageCode.
+   */
+  lang?: string;
 }
 
 /** The editable part of a transcript. Rows are kept in chronological order. */
@@ -118,8 +123,13 @@ export interface TranscriptSummary {
   provider: ProviderName;
   /** Quality mode the file was (or is being) transcribed with. */
   quality: QualityMode;
-  /** BCP-47-ish language code detected by the provider, e.g. "en", "es", "en_us". */
+  /**
+   * BCP-47-ish language code detected by the provider, e.g. "en", "es", "en_us". With several
+   * languages, the one spoken most; rows may carry their own (TranscriptRow.lang).
+   */
   languageCode: string | null;
+  /** Language the user said the recording is in (ISO 639-1); null or absent = detect automatically. */
+  requestedLanguage?: string | null;
   speakersExpected: number | null;
   speakerCount: number | null;
   rowCount: number | null;
@@ -194,6 +204,8 @@ export interface ModeUsage {
  * POST /api/transcripts   (multipart/form-data)
  *   fields (send BEFORE the file part): speakersExpected?: "1".."maxSpeakers", keepAudio?: "true"|"false",
  *                                        clientDurationSec?: number as string,
+ *                                        language?: ISO 639-1 code from WHISPER_LANGUAGES (omit or "auto"
+ *                                        to detect; 400 INVALID_INPUT if unknown),
  *                                        quality?: "standard"|"high"|"ultra" (default "high";
  *                                        429 QUOTA_EXCEEDED when the daily limit is used up)
  *   file part name: "file"

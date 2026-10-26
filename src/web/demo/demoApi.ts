@@ -762,6 +762,8 @@ export interface DemoUploadOptions {
   keepAudio: boolean;
   clientDurationSec: number | null;
   quality?: QualityMode;
+  /** Language of the recording (ISO 639-1); null/absent = detect per speaker. */
+  language?: string | null;
 }
 
 /**

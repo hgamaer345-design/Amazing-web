@@ -180,6 +180,8 @@ export interface UploadOptions {
   clientDurationSec: number | null;
   /** Defaults to "high" on the server. */
   quality?: QualityMode;
+  /** Language of the recording (ISO 639-1, see WHISPER_LANGUAGES); null/absent = detect automatically. */
+  language?: string | null;
 }
 
 export interface UploadProgress {

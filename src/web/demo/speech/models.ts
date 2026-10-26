@@ -7,6 +7,8 @@ import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import type { QualityMode } from '../../../shared/types';
 import type { DiarizationModels } from './diarize';
+import { fetchCached, modelUrl, type ByteProgress } from './download';
+export type { ByteProgress } from './download';
 import { computeFbank, subtractMean } from './fbank';
 import { stripOutputs, UNUSED_WHISPER_OUTPUT } from './onnxOutputs';
 import { cleanTranscript, hasLoop, transcribeChecked, type ClipDecode } from './text';
@@ -39,7 +41,6 @@ export const DIARIZATION_SETTINGS = {
   embedSeconds: 10,
 } as const;
 
-const CACHE_NAME = 'speaker-transcriber-models-v1';
 let configured = false;
 let lite = false;
 
@@ -111,46 +112,6 @@ function isDownloadError(err: unknown): boolean {
 /** On phones, return freed memory instead of keeping ONNX Runtime's arena and buffer plans. */
 function liteSessionOptions(): ort.InferenceSession.SessionOptions {
   return lite ? { enableCpuMemArena: false, enableMemPattern: false } : {};
-}
-
-export type ByteProgress = (loaded: number, total: number) => void;
-
-/** Fetches a file with byte progress, keeping a copy in the Cache API for next time. */
-async function fetchCached(url: string, onProgress: ByteProgress): Promise<Uint8Array> {
-  const cache = typeof caches !== 'undefined' ? await caches.open(CACHE_NAME).catch(() => null) : null;
-  const cached = await cache?.match(url);
-  if (cached) {
-    const bytes = new Uint8Array(await cached.arrayBuffer());
-    onProgress(bytes.length, bytes.length);
-    return bytes;
-  }
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`Download failed (${res.status}) for ${url}`);
-  const total = Number(res.headers.get('content-length')) || 0;
-  const reader = res.body.getReader();
-  const parts: Uint8Array[] = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value);
-    loaded += value.length;
-    onProgress(loaded, Math.max(total, loaded));
-  }
-  const bytes = new Uint8Array(loaded);
-  let pos = 0;
-  for (const p of parts) {
-    bytes.set(p, pos);
-    pos += p.length;
-  }
-  await cache
-    ?.put(url, new Response(bytes, { headers: { 'content-type': 'application/octet-stream' } }))
-    .catch(() => {});
-  return bytes;
-}
-
-function modelUrl(file: string): string {
-  return new URL(`${import.meta.env.BASE_URL}models/${file}`, self.location.href).href;
 }
 
 let speakerSessions: Promise<{ segmentation: ort.InferenceSession; embedding: ort.InferenceSession }> | null =

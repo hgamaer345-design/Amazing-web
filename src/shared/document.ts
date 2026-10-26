@@ -25,6 +25,7 @@ export const rowSchema = z.object({
   startMs: z.number().int().min(0),
   endMs: z.number().int().min(0),
   text: z.string().max(DOCUMENT_LIMITS.maxRowTextLength),
+  lang: z.string().min(1).max(16).optional(),
 });
 
 export const saveDocumentRequestSchema = z.object({
