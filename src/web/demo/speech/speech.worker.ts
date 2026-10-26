@@ -29,8 +29,10 @@ import {
   mainLanguage,
   needsOverall,
   qualityWhisper,
+  MULTILINGUAL_SURE,
   RECHECK_MIN_SECONDS,
   recheckedLanguage,
+  TURN_LID_MIN_SECONDS,
   RECOGNIZER_COST,
   speakerLanguage,
   WHISPER_IDS,
@@ -223,6 +225,8 @@ interface PlannedTurn {
   recognizer: RecognizerId;
   /** Text from an earlier model, kept if the one this turn moved to finds nothing. */
   earlier?: { text: string; language: string };
+  /** The turn's own detection set its language: a speaker-wide re-check leaves it alone. */
+  ownLanguage?: boolean;
 }
 
 export interface SpeakerLanguage {
@@ -262,6 +266,8 @@ export async function transcribeTurns(job: {
   /** Job fraction when transcription starts. */
   start: number;
   progress: Progress;
+  /** Detect each turn's language in multilingual recordings (default true; off to test the rest). */
+  turnDetection?: boolean;
 }): Promise<TranscribeResult> {
   const { audio, turns, models, start, progress } = job;
   const speakers = [...new Set(turns.map((t) => t.speaker))];
@@ -269,6 +275,8 @@ export async function transcribeTurns(job: {
   const languages: SpeakerLanguage[] = [];
   let overall: LanguageGuess | null = null;
   let prefix: string;
+  /** Turns whose own detection gave another language than their speaker's. */
+  const turnLanguage = new Map<number, string>();
   if (job.language) {
     for (const speaker of speakers)
       languages.push({ speaker, seconds: 0, own: null, language: job.language });
@@ -303,14 +311,44 @@ export async function transcribeTurns(job: {
     }
     for (const s of languages) s.language = speakerLanguage(s.own, s.seconds, overall ?? s.own!);
     prefix = `Detected ${describeSpeakerLanguages(languages.map((s) => s.language))}`;
+    // With several languages (or an unsure speaker) a speaker's turns needn't all be in their
+    // language: speaker separation can put two people together, and people switch languages. Then
+    // each turn long enough for a reliable detection gets its own (one encoder pass each; a
+    // single-language recording skips this). A four-language test conversation had Chinese turns
+    // sent, as one "Arabic" speaker's, to the Arabic model.
+    const speakerLanguageOf = new Map(languages.map((s) => [s.speaker, s.language]));
+    if (
+      job.turnDetection !== false &&
+      (new Set(languages.map((s) => s.language)).size > 1 ||
+        languages.some((s) => s.own && s.own.probability < MULTILINGUAL_SURE))
+    ) {
+      progress('transcribing', 'Checking the language of each turn…', start);
+      for (const [index, t] of turns.entries()) {
+        if (seconds(t) < TURN_LID_MIN_SECONDS) continue;
+        const own = speakerLanguageOf.get(t.speaker)!;
+        const other = recheckedLanguage(own, await lid.detectLanguage(audio.subarray(t.start, t.end)));
+        if (other) turnLanguage.set(index, other);
+      }
+      if (turnLanguage.size > 0) {
+        const heard = new Map<string, number>();
+        turns.forEach((t, i) => {
+          const l = turnLanguage.get(i) ?? speakerLanguageOf.get(t.speaker)!;
+          heard.set(l, (heard.get(l) ?? 0) + seconds(t));
+        });
+        const byTime = [...heard].sort((a, b) => b[1] - a[1]).map(([l]) => languageName(l));
+        prefix = `Detected ${listNames(byTime)}`;
+      }
+    }
   }
   const languageOf = new Map(languages.map((s) => [s.speaker, s.language]));
 
   // One queue per model; the model already loaded first, then the most speech first.
   const planned: PlannedTurn[] = turns.map((turn, index) => {
-    const language = languageOf.get(turn.speaker)!;
-    return { index, turn, language, recognizer: models.route(language) };
+    const own = turnLanguage.get(index);
+    const language = own ?? languageOf.get(turn.speaker)!;
+    return { index, turn, language, recognizer: models.route(language), ownLanguage: own !== undefined };
   });
+  let relanguaged = turnLanguage.size;
   const speechBy = new Map<RecognizerId, number>();
   for (const p of planned) speechBy.set(p.recognizer, (speechBy.get(p.recognizer) ?? 0) + seconds(p.turn));
   const order = [...speechBy.keys()].sort(
@@ -342,7 +380,6 @@ export async function transcribeTurns(job: {
   };
 
   const results: (SpeechSegment | null)[] = turns.map(() => null);
-  let relanguaged = 0;
   // The largest Whisper that has detected each speaker's language so far.
   const checkedBy = new Map(speakers.map((s) => [s, WHISPER_IDS.indexOf(models.lastResort)]));
   while (queue.size > 0) {
@@ -376,7 +413,7 @@ export async function transcribeTurns(job: {
         prefix = `Detected ${describeSpeakerLanguages(languages.map((l) => l.language))}`;
         const target = models.route(other);
         for (const p of [...group, ...[...queue.values()].flat()]) {
-          if (p.turn.speaker !== speaker || p.language === other) continue;
+          if (p.turn.speaker !== speaker || p.language === other || p.ownLanguage) continue;
           p.language = other;
           if (target === p.recognizer) continue;
           // Out of this group or its queue, into the target's (added at the end if new).

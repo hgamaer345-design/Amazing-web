@@ -95,6 +95,9 @@ export const LANGUAGE_SCRIPTS: Readonly<Record<string, string>> = {
   ky: 'Cyrillic', tg: 'Cyrillic', mn: 'Cyrillic', tt: 'Cyrillic', ba: 'Cyrillic',
 };
 
+/** The other script the model writes these languages' speech in (Hindi and Urdu are one spoken language). */
+const CONFUSED_SCRIPT: Readonly<Record<string, string>> = { Arabic: 'Devanagari', Devanagari: 'Arabic' };
+
 /** One letter or mark of a script; Script_Extensions, so that shared marks (harakat) count for it. */
 const scriptPattern = (script: string) => new RegExp(`^\\p{scx=${script}}$`, 'u');
 const LETTER = /[\p{L}\p{M}]/gu;
@@ -134,8 +137,10 @@ export function createOmnilingual(
     const [, frames = 0, vocab = 0] = logits.dims;
     const scores = logits.data as Float32Array;
     let text = charsToText(ctcGreedy(scores, frames, vocab, 0).map((id) => tokens[id] ?? ''));
-    if (script && !isMostlyInScript(text, script)) {
-      // Written in another script: the best reading in the language's own, from the same scores.
+    if (script && !isMostlyInScript(text, script) && isMostlyInScript(text, CONFUSED_SCRIPT[script] ?? '')) {
+      // Written in the script of a sister language (Urdu in Devanagari, Hindi in Arabic letters): the
+      // best reading in the language's own, from the same scores. Text in any other script means the
+      // speech isn't in this language at all (a wrong label), and forcing letters would make nonsense.
       let mask = masks.get(script);
       if (!mask) masks.set(script, (mask = scriptMask(tokens, script)));
       text = charsToText(ctcGreedy(scores, frames, vocab, 0, mask).map((id) => tokens[id] ?? ''));

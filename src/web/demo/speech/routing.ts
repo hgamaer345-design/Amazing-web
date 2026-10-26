@@ -190,6 +190,12 @@ export const LID_MIN_SECONDS = 10;
 export const LID_MIN_SAMPLE_SECONDS = 1;
 /** A doubtful Whisper clip at least this long has its language detected again. */
 export const RECHECK_MIN_SECONDS = 3;
+/**
+ * In a recording with several languages (or a speaker detected with less than MULTILINGUAL_SURE),
+ * every turn at least this long has its own language detected.
+ */
+export const TURN_LID_MIN_SECONDS = 2;
+export const MULTILINGUAL_SURE = 0.9;
 
 /** Whether a speaker's language needs the whole recording's detection (see `speakerLanguage`). */
 export function needsOverall(own: LanguageGuess | null, seconds: number): boolean {

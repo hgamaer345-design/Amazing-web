@@ -103,7 +103,12 @@ function setup(scenario: Scenario = {}) {
 
 async function run(
   turns: Turn[],
-  opts: { quality?: 'standard' | 'high' | 'ultra'; lite?: boolean; language?: string | null } & Scenario = {},
+  opts: {
+    quality?: 'standard' | 'high' | 'ultra';
+    lite?: boolean;
+    language?: string | null;
+    turnDetection?: boolean;
+  } & Scenario = {},
 ) {
   const env = setup(opts);
   const language = opts.language ?? null;
@@ -117,6 +122,7 @@ async function run(
     models,
     start: 0.3,
     progress: env.progress,
+    turnDetection: opts.turnDetection,
   });
   return { ...env, result };
 }
@@ -126,7 +132,7 @@ describe('transcribeTurns', () => {
     // Speaker 0 speaks English (turns 0, 2), speaker 1 French (turns 1, 3).
     const turns = [turn(0, 0, 10), turn(1, 10, 22), turn(0, 22, 30), turn(1, 30, 40)];
     const { result, calls, messages } = await run(turns, {
-      detect: (i) => (i === 1 ? sure('fr', 0.9) : sure('en', 0.98)),
+      detect: (i) => (i % 2 === 1 ? sure('fr', 0.9) : sure('en', 0.98)),
     });
     expect(result.speakers.map((s) => [s.speaker, s.language, s.seconds])).toEqual([
       [0, 'en', 18],
@@ -136,6 +142,11 @@ describe('transcribeTurns', () => {
     expect(calls).toEqual([
       'detect 0 18s',
       'detect 1 22s',
+      // Two languages: each turn is checked on its own too.
+      'detect 0 10s',
+      'detect 1 12s',
+      'detect 2 8s',
+      'detect 3 10s',
       // The Whisper already loaded first, then French's (Base is replaced: one Whisper at a time).
       'checked whisper-base 0 en',
       'checked whisper-base 2 en',
@@ -184,8 +195,37 @@ describe('transcribeTurns', () => {
       'detect 1 4s',
       'detect 2 20s',
       'detect 0 30s',
+      // Two languages: each turn's own detection (unsure ones change nothing).
+      'detect 0 20s',
+      'detect 1 4s',
+      'detect 2 20s',
       'detect 2 20s', // by Whisper Small, which Swedish goes to
     ]);
+  });
+
+  it('detects each turn’s language when the recording has several, so a mixed speaker is split', async () => {
+    // Speaker separation put a Chinese turn (2) with the Arabic speaker 1; turn 4 is too short (1 s).
+    const turns = [turn(0, 0, 8), turn(1, 8, 14), turn(1, 14, 22), turn(0, 22, 30), turn(1, 30, 31)];
+    const truth = ['en', 'ar', 'zh', 'en', 'zh'];
+    const { result, calls } = await run(turns, {
+      detect: (i, sample) => (sample.length > 8 * SR && i === 1 ? sure('ar', 0.85) : sure(truth[i]!)),
+    });
+    expect(result.speakers.map((s) => s.language)).toEqual(['en', 'ar']);
+    expect(calls).not.toContain('detect 4 1s');
+    expect(result.segments.map((s) => [s.text, s.lang])).toEqual([
+      ['whisper-base:en:0', 'en'],
+      ['omnilingual:ar:1', 'ar'],
+      ['sensevoice:zh:2', 'zh'],
+      ['whisper-base:en:3', 'en'],
+      ['omnilingual:ar:4', 'ar'],
+    ]);
+    expect(result.relanguaged).toBe(1);
+  });
+
+  it('checks no turn on its own in a recording in one language its speakers are sure of', async () => {
+    const turns = [turn(0, 0, 8), turn(1, 8, 14), turn(0, 14, 22)];
+    const { calls } = await run(turns, { detect: () => sure('en', 0.97) });
+    expect(calls.filter((c) => c.startsWith('detect'))).toEqual(['detect 0 16s', 'detect 1 6s']);
   });
 
   it('skips detection for the language the user chose', async () => {
@@ -291,6 +331,7 @@ describe('transcribeTurns', () => {
           ? sure('en')
           : [sure('en'), sure('de', 0.9), sure('ja', 0.97), sure('en'), sure('de', 0.6), sure('ja')][i]!,
       doubtful: (i, lang) => lang === 'en' && i >= 1,
+      turnDetection: false,
     });
     expect(result.segments.map((s) => [s.text, s.lang])).toEqual([
       ['whisper-base:en:0', 'en'],
@@ -328,6 +369,7 @@ describe('transcribeTurns', () => {
     const { result } = await run(turns, {
       detect: (i, sample) => sure(i === 0 && sample.length !== 10 * SR ? 'en' : 'ja'),
       doubtful: (i) => i === 0,
+      turnDetection: false,
       silent: ['sensevoice'],
     });
     expect(result.segments.map((s) => [s.text, s.lang])).toEqual([

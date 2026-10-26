@@ -142,6 +142,13 @@ describe('createOmnilingual', () => {
     expect(fake.inputs).toHaveLength(3);
   });
 
+  it("keeps the model's own text when it is in an unrelated script (the language label is wrong)", async () => {
+    // Latin letters for speech labelled Arabic: not Hindi/Urdu's script swap, so nothing is forced.
+    const fake = fakeSession([5, 0, 4, 6, 0, 5], [8, 4, 0, 8, 8, 8]);
+    const omni = createOmnilingual(fake.session, tokens, Tensor);
+    expect(await omni.transcribe(noise(1), 'ar')).toBe('A ba');
+  });
+
   it('gives no text for a lone letter (what noise produces)', async () => {
     const fake = fakeSession([0, 0, 5, 0, 4, 0]);
     expect(await createOmnilingual(fake.session, tokens, Tensor).transcribe(noise(1), 'sw')).toBe('');
