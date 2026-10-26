@@ -1,7 +1,7 @@
-// Kaldi-compatible log mel filterbank features, matching kaldi-native-fbank with the options
-// sherpa-onnx uses for speaker-embedding models: 25 ms povey window, 10 ms shift, no edge
+// Kaldi-compatible log mel filterbank features, matching kaldi-native-fbank. The defaults are the
+// options sherpa-onnx uses for speaker-embedding models: 25 ms povey window, 10 ms shift, no edge
 // snipping, DC removal, 0.97 pre-emphasis, 512-point power spectrum, 80 mel bins between 20 Hz
-// and 7600 Hz, log with a FLT_EPSILON floor, no dither.
+// and 7600 Hz, log with a FLT_EPSILON floor, no dither. SenseVoice uses FunASR's variant.
 
 export const FBANK = {
   sampleRate: 16000,
@@ -14,6 +14,31 @@ export const FBANK = {
   preemphasis: 0.97,
 } as const;
 
+/** The Kaldi options that differ between the models. */
+export interface FbankOptions {
+  window: 'povey' | 'hamming';
+  /** Kaldi's snip_edges: only frames that fit in the signal, instead of one per shift (edges reflected). */
+  snipEdges: boolean;
+  lowFreq: number;
+  highFreq: number;
+}
+
+/** sherpa-onnx's options for the speaker-embedding model (the default). */
+export const SPEAKER_FBANK: FbankOptions = {
+  window: 'povey',
+  snipEdges: false,
+  lowFreq: FBANK.lowFreq,
+  highFreq: FBANK.highFreq,
+};
+
+/** FunASR's WavFrontend, as sherpa-onnx runs SenseVoice: hamming window, snipped edges, up to 8 kHz. */
+export const SENSEVOICE_FBANK: FbankOptions = {
+  window: 'hamming',
+  snipEdges: true,
+  lowFreq: 20,
+  highFreq: FBANK.sampleRate / 2,
+};
+
 const FLT_EPSILON = 1.1920928955078125e-7;
 
 function mel(freq: number): number {
@@ -25,20 +50,23 @@ interface MelBin {
   weights: Float64Array;
 }
 
-let cache: {
+interface Filters {
   window: Float64Array;
   bins: MelBin[];
-  cos: Float64Array;
-  sin: Float64Array;
-  rev: Uint16Array;
-} | null = null;
+}
 
-function tables() {
-  if (cache) return cache;
-  const { frameLength, fftSize, numBins, lowFreq, highFreq, sampleRate } = FBANK;
+const filterCache = new Map<string, Filters>();
+
+function filters(options: FbankOptions): Filters {
+  const key = `${options.window} ${options.lowFreq} ${options.highFreq}`;
+  const cached = filterCache.get(key);
+  if (cached) return cached;
+  const { frameLength, fftSize, numBins, sampleRate } = FBANK;
+  const { lowFreq, highFreq } = options;
   const window = new Float64Array(frameLength);
   for (let i = 0; i < frameLength; i++) {
-    window[i] = Math.pow(0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (frameLength - 1)), 0.85);
+    const cos = Math.cos((2 * Math.PI * i) / (frameLength - 1));
+    window[i] = options.window === 'hamming' ? 0.54 - 0.46 * cos : Math.pow(0.5 - 0.5 * cos, 0.85);
   }
 
   const numFftBins = fftSize / 2;
@@ -62,7 +90,16 @@ function tables() {
     }
     bins.push({ first: Math.max(0, first), weights: Float64Array.from(weights) });
   }
+  const out = { window, bins };
+  filterCache.set(key, out);
+  return out;
+}
 
+let fftCache: { cos: Float64Array; sin: Float64Array; rev: Uint16Array } | null = null;
+
+function fftTables() {
+  if (fftCache) return fftCache;
+  const { fftSize } = FBANK;
   const cos = new Float64Array(fftSize / 2);
   const sin = new Float64Array(fftSize / 2);
   for (let i = 0; i < fftSize / 2; i++) {
@@ -76,13 +113,13 @@ function tables() {
     for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b);
     rev[i] = r;
   }
-  cache = { window, bins, cos, sin, rev };
-  return cache;
+  fftCache = { cos, sin, rev };
+  return fftCache;
 }
 
 /** In-place iterative radix-2 FFT. */
 function fft(re: Float64Array, im: Float64Array): void {
-  const { cos, sin, rev } = tables();
+  const { cos, sin, rev } = fftTables();
   const n = re.length;
   for (let i = 0; i < n; i++) {
     const j = rev[i]!;
@@ -111,28 +148,36 @@ function fft(re: Float64Array, im: Float64Array): void {
   }
 }
 
-/** Number of frames Kaldi produces for `numSamples` samples without edge snipping. */
-export function numFrames(numSamples: number): number {
-  return Math.floor((numSamples + FBANK.frameShift / 2) / FBANK.frameShift);
+/** Number of frames Kaldi produces for `numSamples` samples (by default without edge snipping). */
+export function numFrames(numSamples: number, snipEdges = false): number {
+  const { frameLength, frameShift } = FBANK;
+  if (snipEdges)
+    return numSamples < frameLength ? 0 : 1 + Math.floor((numSamples - frameLength) / frameShift);
+  return Math.floor((numSamples + frameShift / 2) / frameShift);
 }
 
 /**
  * Log mel filterbank of `samples` (16 kHz, nominally in [-1, 1]) multiplied by `scale`
  * (32768 for models trained on int16-range audio). Returns frames × 80, row-major.
  */
-export function computeFbank(samples: Float32Array, scale = 32768): Float32Array {
+export function computeFbank(
+  samples: Float32Array,
+  scale = 32768,
+  options: FbankOptions = SPEAKER_FBANK,
+): Float32Array {
   const { frameLength, frameShift, fftSize, numBins, preemphasis } = FBANK;
-  const { window, bins } = tables();
+  const { window, bins } = filters(options);
   const n = samples.length;
-  const frames = numFrames(n);
+  const frames = numFrames(n, options.snipEdges);
   const out = new Float32Array(frames * numBins);
   const re = new Float64Array(fftSize);
   const im = new Float64Array(fftSize);
   const frame = new Float64Array(frameLength);
   const power = new Float64Array(fftSize / 2 + 1);
+  const offset = options.snipEdges ? 0 : frameShift / 2 - frameLength / 2;
 
   for (let f = 0; f < frames; f++) {
-    const start = f * frameShift + frameShift / 2 - frameLength / 2;
+    const start = f * frameShift + offset;
     let sum = 0;
     for (let s = 0; s < frameLength; s++) {
       let idx = start + s;
