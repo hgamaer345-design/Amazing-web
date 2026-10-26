@@ -7,9 +7,10 @@ import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import type { QualityMode } from '../../../shared/types';
 import type { DiarizationModels } from './diarize';
-import { computeFbank } from './fbank';
+import { computeFbank, subtractMean } from './fbank';
 import { stripOutputs, UNUSED_WHISPER_OUTPUT } from './onnxOutputs';
-import { cleanTranscript } from './text';
+import { cleanTranscript, hasLoop, transcribeChecked, type ClipDecode } from './text';
+import { splitLongTurns } from './turns';
 
 /** Whisper model per quality mode (multilingual; 8-bit quantized for WebAssembly). */
 export const WHISPER_MODELS: Record<QualityMode, { id: string; label: string; approxMB: number }> = {
@@ -215,7 +216,8 @@ export function speakerModelRunners(
     async embed(samples) {
       const limited =
         samples.length > embedSeconds * 16000 ? samples.subarray(0, embedSeconds * 16000) : samples;
-      const feats = computeFbank(limited);
+      // Mean-normalised per segment, as WeSpeaker does before its model.
+      const feats = subtractMean(computeFbank(limited));
       const frames = feats.length / 80;
       const input = sessions.embedding.inputNames[0]!;
       const output = sessions.embedding.outputNames[0]!;
@@ -294,18 +296,155 @@ export async function detectLanguage(
   return best.code;
 }
 
-/** Transcribes one clip in a known language. */
+/** Natural-log softmax of `scores` (one vocabulary-sized row) at `index`. */
+function logSoftmaxAt(scores: Float32Array, index: number): number {
+  let max = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < scores.length; i++) if (scores[i]! > max) max = scores[i]!;
+  let sum = 0;
+  for (let i = 0; i < scores.length; i++) sum += Math.exp(scores[i]! - max);
+  return scores[index]! - max - Math.log(sum);
+}
+
+/**
+ * Most tokens Whisper may write for a clip: about three times the fastest speech we measured (and
+ * room for scripts that take several tokens per character), so a repetition loop stops early
+ * instead of running to Whisper's 448-token limit (on Tiny, ~20 s for one 13 s clip).
+ */
+export function maxClipTokens(seconds: number): number {
+  return Math.min(440, 20 + Math.ceil(16 * seconds));
+}
+
+type WhisperModel = {
+  generation_config: { eos_token_id: number; no_timestamps_token_id: number };
+  forward(inputs: unknown): Promise<{ logits: Tensor }>;
+};
+
+/**
+ * One greedy Whisper pass over a clip that also records, at no extra model cost, the
+ * log-probability of every token Whisper chose and its no-speech probability.
+ */
+async function decodeScored(
+  asr: AutomaticSpeechRecognitionPipeline,
+  clip: Float32Array,
+  language: string,
+  timestamps: boolean,
+): Promise<ClipDecode> {
+  const model = asr.model as unknown as WhisperModel;
+  const { eos_token_id: endId, no_timestamps_token_id: noTimestampsId } = model.generation_config;
+  const chosen: { id: number; logprob: number }[] = [];
+  // The scores are read one step late: Transformers.js runs its timestamp rules after this
+  // processor and they edit the scores in place, so they are final (and the chosen token, the
+  // last input id, known) only at the next step.
+  let pending: Float32Array | null = null;
+  const settle = (id: number) => {
+    if (pending) chosen.push({ id, logprob: logSoftmaxAt(pending, id) });
+    pending = null;
+  };
+  // A loop is ended as soon as it shows (by making <|endoftext|> the only choice) rather than
+  // left to run to the token limit; Transformers.js ignores custom stopping criteria for Whisper.
+  let looping = false;
+  const observe = (inputIds: bigint[][], logits: Tensor) => {
+    const ids = inputIds[0]!;
+    settle(Number(ids.at(-1)));
+    const scores = logits.data as Float32Array;
+    if (!looping && hasLoop(ids.map(Number).filter((id) => id < endId))) {
+      looping = true;
+      scores.fill(Number.NEGATIVE_INFINITY);
+      scores[endId] = 0;
+    } else if (!looping) {
+      pending = scores;
+    }
+    return logits;
+  };
+  // The first decoder pass scores the whole prompt; its scores right after <|startoftranscript|>
+  // give the no-speech probability (as in openai/whisper) without another encoder pass.
+  let noSpeechProb = Number.NaN;
+  const forward = model.forward;
+  model.forward = async (inputs) => {
+    const out = await forward.call(model, inputs);
+    if (Number.isNaN(noSpeechProb)) {
+      const vocab = out.logits.dims[out.logits.dims.length - 1]!;
+      const row = (out.logits.data as Float32Array).subarray(0, vocab);
+      noSpeechProb = Math.exp(logSoftmaxAt(row, noTimestampsId - 1)); // <|nocaptions|>
+    }
+    return out;
+  };
+  let text: string;
+  try {
+    const out = await asr(clip, {
+      language,
+      task: 'transcribe',
+      return_timestamps: timestamps,
+      // Also keeps timestamp mode to one pass over the clip (no seek into the padding).
+      max_new_tokens: maxClipTokens(clip.length / 16000),
+      logits_processor: [observe],
+    } as unknown as Parameters<AutomaticSpeechRecognitionPipeline>[1]);
+    text = (Array.isArray(out) ? out[0]! : out).text;
+  } finally {
+    model.forward = forward;
+  }
+  if (pending && !looping) {
+    // The last step: greedy decoding took the best-scoring token.
+    const last: Float32Array = pending;
+    let best = 0;
+    for (let i = 1; i < last.length; i++) if (last[i]! > last[best]!) best = i;
+    settle(best);
+  }
+  const end = chosen.findIndex((t) => t.id === endId);
+  const tokenizer = asr.tokenizer;
+  return {
+    text,
+    // Text tokens come before the special ones (<|endoftext|> and up, timestamps included).
+    tokens: (end >= 0 ? chosen.slice(0, end) : chosen)
+      .filter((t) => t.id < endId)
+      .map((t) => ({ ...t, text: tokenizer.decode([t.id]) })),
+    endLogprob: end >= 0 && !looping ? chosen[end]!.logprob : null,
+    noSpeechProb: Number.isNaN(noSpeechProb) ? 0 : noSpeechProb,
+    detokenize: (ids) => (ids.length ? tokenizer.decode(ids, { skip_special_tokens: true }) : ''),
+  };
+}
+
+/** Clips at least this long whose two decodes both fail are split in two and tried again. */
+const SPLIT_MIN_SECONDS = 8;
+
+/**
+ * Transcribes one clip in a known language, keeping Whisper's hallucinations out (see
+ * `transcribeChecked`: a doubtful clip costs one more pass). A long clip that Whisper still loops
+ * on or is unsure of is cut at its quietest moment near the middle and each half transcribed the
+ * same way: on shorter audio Whisper Tiny often recovers the speech (and on noise both halves are
+ * dropped again).
+ */
 export async function transcribeClip(
   asr: AutomaticSpeechRecognitionPipeline,
   clip: Float32Array,
   language: string,
+  canSplit = true,
 ): Promise<string> {
-  const long = clip.length > 30 * 16000;
-  const out = await asr(clip, {
-    language,
-    task: 'transcribe',
-    ...(long ? { chunk_length_s: 30, stride_length_s: 5 } : {}),
+  const seconds = clip.length / 16000;
+  if (clip.length > 30 * 16000) {
+    // Not used by the worker (clips are cut to ≤ 28 s), so no checks beyond the clean-up.
+    const out = await asr(clip, { language, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 });
+    const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : out.text;
+    return cleanTranscript(text, seconds);
+  }
+  const verdict = await transcribeChecked(
+    (timestamps) => decodeScored(asr, clip, language, timestamps),
+    seconds,
+  );
+  if (
+    !canSplit ||
+    seconds < SPLIT_MIN_SECONDS ||
+    (verdict.dropped !== 'loop' && verdict.dropped !== 'low-confidence')
+  ) {
+    return verdict.text;
+  }
+  // One cut between a third and two thirds of the clip, at its quietest 50 ms.
+  const halves = splitLongTurns(clip, [{ speaker: 0, start: 0, end: clip.length }], {
+    maxSeconds: (seconds * 2) / 3,
+    searchSeconds: seconds / 3,
   });
-  const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : out.text;
-  return cleanTranscript(text, clip.length / 16000);
+  const texts: string[] = [];
+  for (const half of halves)
+    texts.push(await transcribeClip(asr, clip.subarray(half.start, half.end), language, false));
+  return texts.filter(Boolean).join(' ');
 }

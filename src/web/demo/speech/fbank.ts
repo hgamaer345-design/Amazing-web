@@ -162,3 +162,20 @@ export function computeFbank(samples: Float32Array, scale = 32768): Float32Array
   }
   return out;
 }
+
+/**
+ * Subtracts each bin's mean over the frames (cepstral mean normalisation, without variance
+ * normalisation), in place. WeSpeaker applies this to every segment before its embedding model:
+ * without it the fingerprint follows the recording level and channel more than the voice.
+ */
+export function subtractMean(feats: Float32Array, numBins: number = FBANK.numBins): Float32Array {
+  const frames = feats.length / numBins;
+  if (frames === 0) return feats;
+  for (let b = 0; b < numBins; b++) {
+    let sum = 0;
+    for (let f = 0; f < frames; f++) sum += feats[f * numBins + b]!;
+    const mean = sum / frames;
+    for (let f = 0; f < frames; f++) feats[f * numBins + b]! -= mean;
+  }
+  return feats;
+}

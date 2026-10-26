@@ -35,8 +35,8 @@ export interface DiarizationOptions {
   numSpeakers?: number | null;
   /**
    * Ward merge height up to which clusters are joined (unit-length embeddings). By default it
-   * grows with the number of embeddings up to 2: a merge's height grows with the size of the two
-   * groups, so few embeddings need a lower bar to tell voices apart.
+   * grows with the number of embeddings up to 2.45: a merge's height grows with the size of the
+   * two groups, so few embeddings need a lower bar to tell voices apart.
    */
   threshold?: number;
   /** Complete-linkage cosine distance used instead for short recordings (see cannotLinkMaxWindows). */
@@ -351,7 +351,7 @@ export async function diarize(
       const ward = clusterEmbeddings(vectors, {
         linkage: 'ward',
         numClusters,
-        threshold: options.threshold ?? Math.min(2, 0.3 * Math.sqrt(vectors.length)),
+        threshold: options.threshold ?? Math.min(2.45, 0.4 * Math.sqrt(vectors.length)),
       });
       // Overlapping windows hear the same speech: count each second once.
       const share = Math.min(1, (anchorEvery * windowShift) / windowSize);

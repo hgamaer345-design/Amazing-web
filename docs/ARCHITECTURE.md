@@ -319,9 +319,11 @@ diarize.ts         based on sherpa-onnx's pyannote pipeline: segmentation-3.0 on
                    3 local speakers), WeSpeaker embeddings, clustering (cluster.ts: Ward linkage plus
                    clean-up; complete linkage for short files), overlap-add, min on/off durations —
                    with the changes below
-fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false, no CMN) for WeSpeaker
+fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false) + per-segment mean
+                   normalisation for WeSpeaker
 turns.ts           speaker turns → padded, merged clips; long turns cut at the quietest point
-text.ts            clean-up of Whisper's text (sound tags, lone "you" on noise, repetition loops)
+text.ts            clean-up of Whisper's text (sound tags, lone "you" on noise, repetition loops) and the
+                   hallucination checks (silence, loops, unlikely text, "Thank you for watching.")
 models.ts          ONNX Runtime set-up (self-hosted wasm; threads when cross-origin isolated),
                    model download + Cache API, Whisper via Transformers.js, language detection
 onnxOutputs.ts     drops Whisper's unused attention outputs from the model files before loading
@@ -359,10 +361,16 @@ fell apart on real speech: a 2-person interview came out as 6 speakers, AMI meet
 participants as 18–40. Real voices vary with intonation, distance to the microphone and crosstalk,
 and a single outlying embedding blocks a merge. Now (`cluster.ts`, `refineClusters`):
 
+- **Mean-normalised features**: each segment's fbank has its per-bin mean subtracted before the
+  embedding model, as WeSpeaker's own inference does (sherpa-onnx only does it when the model's
+  metadata asks, and this export doesn't). Without it a fingerprint followed the recording level
+  and channel: one speaker 20 dB quieter scored cosine 0.82 against himself, two different callers
+  0.83; with it, 1.00 and 0.13.
+
 - **Ward linkage** on unit-length embeddings, via the same nearest-neighbour chain (Ward is
   reducible), checked against SciPy. A merge's height grows with the size of both groups, so it
   behaves like a significance test: two halves of one voice stay close however much they speak,
-  two voices separate more clearly the more each speaks. The threshold is `min(2, 0.3·√n)` for n
+  two voices separate more clearly the more each speaks. The threshold is `min(2.45, 0.4·√n)` for n
   embeddings, since short recordings give too little evidence for the full bar.
 - **Clean-up**: a cluster with less than `min(8 s, 10 % of the speech)` is folded into the most
   similar voice (laughter, a cough, crosstalk); clusters whose average voices are ≥ 0.92 alike
@@ -374,10 +382,11 @@ and a single outlying embedding blocks a merge. Now (`cluster.ts`, `refineCluste
 Evaluated with `onnxruntime-node` on 10 real recordings with reference labels (AMI meetings
 ES2004a/ES2005a/IS1009a/TS3003a, 5–10 min, 4 speakers; five Earnings-21 phone calls, 2–7 speakers;
 a 5.5 min 2-person interview with approximate labels), 4 synthetic conversations, and 12 real
-excerpts of 25 s – 2 min. Mean diarization error (DER, no collar): long files 38.7 % → 18.5 %,
-excerpts 36.1 % → 18.9 %; the interview 43 % (6 speakers) → 13 % (2). Remaining weak spots: phone
-calls with many similar narrow-band voices (an earnings call with 7 speakers is found as 2) and
-heavy overlap in meetings (missed speech is ~10–20 % of the AMI error).
+excerpts of 25 s – 2 min. Mean diarization error (DER, no collar): long files 38.7 % → 12.6 %
+(real ones 14.9 %), excerpts 36.1 % → 17.0 %; the right number of speakers in 20 of 26 files (was
+9); the interview 43 % (6 speakers) → 13 % (2), an AMI meeting 84 % (32 speakers) → 20 % (4).
+Remaining weak spots: excerpts of a minute or two with 3–4 speakers who each say little (often
+merged), and overlapping speech in meetings (missed speech is ~10–20 % of the AMI error).
 
 - Speaker models are fetched at build time by `scripts/fetch-speech-models.mjs` from sherpa-onnx's
   GitHub releases (SHA-256 pinned) into `vendor/speech-models/` and served from `<base>/models/`.
@@ -390,6 +399,33 @@ heavy overlap in meetings (missed speech is ~10–20 % of the AMI error).
   turn. Packing several turns into one pass and splitting the text by timestamps was tried: 1.35×
   faster on a 5.5 min file, but word errors rose from 3.2% to 4.9% (Whisper Tiny), so each turn is
   still transcribed on its own.
+- **Hallucinations** (`text.ts` `transcribeChecked`; scores from `models.ts` `decodeScored`):
+  Whisper writes fluent text for silence, noise and unclear audio ("Thank you.", "Thank you for
+  watching.", repetition loops, invented sentences). Each greedy pass also records, at no extra
+  model cost, every chosen token's log-probability and Whisper's no-speech probability (the
+  `<|nocaptions|>` score after `<|startoftranscript|>`, read from the first decoder pass as
+  openai/whisper does). Then, per clip:
+  - no-speech > 0.6 and average log-probability < -1 (openai/whisper's rule): silence, dropped;
+  - a token run repeating 3+ times over 16+ tokens is a loop, ended as soon as it appears (a
+    sentence said three times also counts);
+  - a loop, a text cut off at `maxClipTokens` or an average < -1 gets a second pass with
+    timestamps, which Whisper Tiny usually gets right on such clips; the better decode is kept
+    (else the text before the loop) and the clip dropped if both stay below -1.2; a long clip
+    (≥ 8 s) dropped that way is cut at its quietest moment near the middle and both halves tried;
+  - a known hallucination phrase or credit ("Thank you.", "Thanks for watching.", "Subtitles by
+    …", HALLUCINATION_PHRASES) ending a clip is removed unless its tokens average ≥ -0.3: real
+    ones scored ≥ -0.12, invented ones ≤ -0.46. One followed by more speech is kept.
+
+  Measured per clip against a Parakeet-TDT reference on 637 Whisper Tiny clips (a real 5.5 min
+  interview under five diarizations, AMI and earnings-call excerpts, the TTS conversations, real
+  background noise): wrong words 1943 → 1066, correct words 5937 → 6189 (24
+  lost, in clips whose text was mostly invented), 14% of clips decoded twice, 22% fewer decoder
+  steps (loops end early). End to end on six recordings (Tiny): wrong words 1318 → 697, correct
+  2054 → 2277, Whisper time −8% (from −28% to +20% per file). Whisper Base: wrong words 455 → 197
+  on 237 clips, 3 correct words lost. In TTS German, Spanish, French, Russian and Chinese no real
+  sentence was dropped; Hindi on Tiny (character error > 100%) loses most clips as unlikely. Not
+  done: an energy check (clips > 20 dB below the recording's median turn were all
+  hallucinations, but it only removed 5 more words).
 - After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
   memory); model errors are reported either as download problems or as "couldn't start" (memory).
 - Memory: the Whisper conversions on the hub also output every layer's attention weights
