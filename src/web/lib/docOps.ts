@@ -2,6 +2,7 @@
 // nothing changes, so the undo history can skip no-ops and memoised rows keep their identity.
 import { DOCUMENT_LIMITS } from '../../shared/document';
 import { defaultSpeakerName, makeId } from '../../shared/speakers';
+import { joinText } from '../../shared/text';
 import type { Speaker, TranscriptRow } from '../../shared/types';
 
 /** The editable content of a transcript. The server version is tracked by the autosave, not here. */
@@ -102,10 +103,6 @@ export function editRowText(doc: EditableDoc, rowId: string, text: string): Edit
   return replaceRow(doc, index, { ...row, text: clean });
 }
 
-function joinText(a: string, b: string): string {
-  return [a.trim(), b.trim()].filter(Boolean).join(' ');
-}
-
 /** Merges rows[index] and rows[index + 1] into the upper row (its id and speaker are kept). */
 function mergeAt(doc: EditableDoc, index: number): EditableDoc {
   const upper = doc.rows[index];
@@ -115,8 +112,13 @@ function mergeAt(doc: EditableDoc, index: number): EditableDoc {
     ...upper,
     startMs: Math.min(upper.startMs, lower.startMs),
     endMs: Math.max(upper.endMs, lower.endMs),
-    text: joinText(upper.text, lower.text),
+    // As written: "そうですね。" + "分かりました。" has no space between them.
+    text: joinText(upper.text.trim(), lower.text.trim()),
   };
+  // The upper row's language, unless it had no text to be in one.
+  const lang = upper.text.trim() ? upper.lang : lower.lang;
+  if (lang) merged.lang = lang;
+  else delete merged.lang;
   const rows = [...doc.rows.slice(0, index), merged, ...doc.rows.slice(index + 2)];
   return pruneUnusedSpeakers({ ...doc, rows });
 }

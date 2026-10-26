@@ -187,3 +187,74 @@ describe('isHallucinationPhrase across languages', () => {
     expect(isHallucinationPhrase('Subtitles are on.')).toBe(false);
   });
 });
+
+describe('collapseRepeats in other scripts', () => {
+  it('collapses loops in text written without spaces', () => {
+    expect(collapseRepeats('谢谢'.repeat(12))).toBe('谢谢');
+    expect(collapseRepeats('我们走吧，'.repeat(6))).toBe('我们走吧，');
+    expect(collapseRepeats(`はい。${'ありがとうございます。'.repeat(6)}`)).toBe(
+      'はい。ありがとうございます。',
+    );
+    expect(collapseRepeats('ขอบคุณครับ'.repeat(8))).toBe('ขอบคุณครับ');
+    expect(collapseRepeats('𠮷'.repeat(9))).toBe('𠮷𠮷');
+    // Latin text is unchanged.
+    expect(collapseRepeats('thank you, '.repeat(6))).toBe('thank you,');
+  });
+
+  it('leaves ordinary repetition in those scripts alone', () => {
+    for (const text of [
+      '哈哈哈',
+      'はいはいはい',
+      '对对对对',
+      '是的是的是的',
+      '今日はいい天気ですね。そうですね。',
+    ]) {
+      expect(collapseRepeats(text)).toBe(text);
+    }
+  });
+
+  it('tells words apart by their vowel signs', () => {
+    // कम ("less") and काम ("work") differ only by the vowel sign ा: a two-word loop, not one word.
+    expect(collapseRepeats('कम काम कम काम कम काम कम काम')).toBe('कम काम');
+    expect(collapseRepeats('काम '.repeat(8))).toBe('काम');
+  });
+});
+
+describe('cleanTranscript in other scripts', () => {
+  it('drops full-width sound tags and music notes', () => {
+    expect(cleanTranscript('（拍手）', 3)).toBe('');
+    expect(cleanTranscript('【音楽】', 3)).toBe('');
+    expect(cleanTranscript('［笑］', 3)).toBe('');
+    expect(cleanTranscript('♪～', 3)).toBe('');
+    expect(cleanTranscript('～♪ La la la ♪～', 3)).toBe('La la la');
+  });
+
+  it('keeps speech in parentheses but drops sound tags there', () => {
+    expect(cleanTranscript('Il prezzo (in euro) è salito.', 5)).toBe('Il prezzo (in euro) è salito.');
+    expect(cleanTranscript('2020年(令和2年)に始まった', 5)).toBe('2020年(令和2年)に始まった');
+    expect(cleanTranscript('東京（とうきょう）に行きました。', 5)).toBe('東京（とうきょう）に行きました。');
+    expect(cleanTranscript('So I said (laughs) no way.', 5)).toBe('So I said no way.');
+    expect(cleanTranscript('(Risas) Sí, claro.', 5)).toBe('Sí, claro.');
+    expect(cleanTranscript('That was great. (door closes)', 5)).toBe('That was great.');
+    expect(cleanTranscript('(speaking in foreign language)', 5)).toBe('');
+  });
+
+  it('adds no space where a tag sat inside Chinese or Japanese', () => {
+    expect(cleanTranscript('你好（笑）我们走吧', 5)).toBe('你好我们走吧');
+    expect(cleanTranscript('そうですね[音楽]分かりました', 5)).toBe('そうですね分かりました');
+  });
+
+  it('leaves credits and outros to the hallucination filter, which drops them when Whisper is unsure', () => {
+    for (const t of [
+      'ご視聴ありがとうございました',
+      '字幕由Amara.org社区提供',
+      "Sous-titres réalisés par la communauté d'Amara.org",
+      'Untertitel der Amara.org-Community',
+      'Субтитры сделал DimaTorzok',
+    ]) {
+      expect(isHallucinationPhrase(t)).toBe(true);
+      expect(cleanTranscript(t, 1.2)).toBe(t);
+    }
+    expect(stripHallucinationPhrases(decodeOf(['ご視聴:-0.9', 'ありがとうございました:-0.8']))).toBe('');
+  });
+});

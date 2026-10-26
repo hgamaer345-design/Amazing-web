@@ -1,17 +1,87 @@
 // Clean-up of Whisper's text for one clip, and the checks that keep Whisper's hallucinations
 // (text invented for noise, silence or unclear audio) out of the transcript.
+import { joinTexts } from '../../../shared/text';
 
-/** Whisper's usual output for non-speech: sound tags ("[Music]", "(laughs)", "♪") and nothing else. */
-const SOUND_TAGS = /\[[^\]]*\]|\([^)]*\)|♪+/g;
+/**
+ * Whisper's usual output for non-speech: sound tags ("[Music]", "【音楽】", "(laughs)", "（拍手）",
+ * "♪", "♪～") and nothing else. Brackets and notes always go; parentheses also hold real speech
+ * ("2020年(令和2年)"), so those go only when `isSoundTag` says so.
+ */
+const SOUND_TAGS = /\[[^\]]*\]|［[^］]*］|【[^】]*】|[~～〜]*[♪♫♬]+[~～〜]*|\([^)]*\)|（[^）]*）/g;
+
+/** Words of the sound tags Whisper writes in parentheses, in the languages it writes them most. */
+const SOUND_WORDS = new RegExp(
+  [
+    // Latin and Cyrillic stems start a word: "(Risas)", not "(Larisa)" (no lookbehind: older Safari).
+    '(?:^|\\P{L})(?:laugh|chuckl|giggl|applau|music|cheer|clap|cough|sigh|sniff|gasp|groan|scream|whisper',
+    'mumbl|inaudible|indistinct|unintelligible|crosstalk|silence|noise|static|beep|breath|sobs|crying',
+    'risa|aplauso|música|rire|applaudissement|musique|lach|musik|risate|applausi|musica|risos',
+    'смех|аплодисмент|музык|śmiech|oklaski|muzyk|gelach|muziek|kahkaha|alkış|müzik)',
+    '笑|拍手|音楽|音乐|掌声|歓声|웃음|박수|음악|ضحك|تصفيق|موسيق|צחוק|מחיאות|מוזיקה|हँसी|तालियाँ|संगीत',
+  ].join('|'),
+  'iu',
+);
+
+/**
+ * Whether a parenthesised group of Whisper's text is a sound tag rather than speech: short, no
+ * digits, and either a known sound word or alone at the start or end of the clip, where Whisper
+ * puts the tags it writes for laughter or music it has no word for ("(door closes)").
+ */
+function isSoundTag(group: string, before: string, after: string): boolean {
+  const inner = group.slice(1, -1).trim();
+  if (/\p{N}/u.test(inner) || inner.length > 40 || inner.split(/\s+/).length > 5) return false;
+  const alone = (side: string) => side.replace(SOUND_TAGS, '').trim() === '';
+  return SOUND_WORDS.test(inner) || alone(before) || alone(after);
+}
+
+/** Scripts written without spaces between words, where a loop has no spaces to find it by. */
+const UNSPACED_RUN =
+  /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}\u3000-\u303f\uff01-\uff60]{8,}/gu;
+
+let graphemeSegmenter: Intl.Segmenter | null | undefined;
+
+/** The text's user-perceived characters (a Thai or Hindi letter with its vowel signs is one). */
+function graphemes(text: string): string[] {
+  if (graphemeSegmenter === undefined) {
+    graphemeSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter() : null;
+  }
+  return graphemeSegmenter ? Array.from(graphemeSegmenter.segment(text), (s) => s.segment) : [...text];
+}
+
+/**
+ * Collapses loops inside text written without spaces ("谢谢谢谢谢谢…"), measured in characters as
+ * `collapseRepeats` measures words: a piece of 3+ characters repeated 4+ times in a row, or of 1–2
+ * characters 8+ times. A single character keeps two copies, since such words are often doubled
+ * ("谢谢", "哈哈").
+ */
+function collapseUnspaced(run: string): string {
+  const chars = graphemes(run);
+  const same = (a: number, b: number, n: number) => {
+    for (let k = 0; k < n; k++) if (chars[a + k] !== chars[b + k]) return false;
+    return true;
+  };
+  for (let n = 1; n <= 40; n++) {
+    const minReps = n <= 2 ? 8 : 4;
+    const keep = n === 1 ? 2 : 1;
+    for (let i = 0; i + n * minReps <= chars.length; i++) {
+      let reps = 1;
+      while (i + (reps + 1) * n <= chars.length && same(i, i + reps * n, n)) reps++;
+      if (reps >= minReps) chars.splice(i + keep * n, (reps - keep) * n);
+    }
+  }
+  return chars.join('');
+}
 
 /**
  * Collapses Whisper's repetition loops to one copy: a phrase of 2+ words repeated 4+ times in a
- * row, or a single word repeated 8+ times ("Ah, ah, ah, …" on a laugh). Ordinary repetition
+ * row, or a single word repeated 8+ times ("Ah, ah, ah, …" on a laugh); likewise inside Chinese,
+ * Japanese or Thai text, which has no spaces (see `collapseUnspaced`). Ordinary repetition
  * ("no, no, no", "very very very very good") is left alone.
  */
 export function collapseRepeats(text: string): string {
   const words = text.split(/\s+/).filter(Boolean);
-  const key = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+  // Marks count: Hindi कम ("less") and काम ("work") differ only by a vowel sign.
+  const key = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{M}\p{N}']/gu, '');
   for (let n = 1; n <= 8; n++) {
     const minReps = n === 1 ? 8 : 4;
     for (let i = 0; i + n * minReps <= words.length; i++) {
@@ -25,12 +95,23 @@ export function collapseRepeats(text: string): string {
       if (reps >= minReps) words.splice(i + n, (reps - 1) * n);
     }
   }
-  return words.join(' ');
+  return words.join(' ').replace(UNSPACED_RUN, collapseUnspaced);
 }
 
 /** Cleans Whisper's text for a clip: drops sound tags, lone "you" hallucinations and loops. */
 export function cleanTranscript(text: string, clipSeconds: number): string {
-  let out = text.replace(SOUND_TAGS, ' ').replace(/\s+/g, ' ').trim();
+  const pieces: string[] = [];
+  let at = 0;
+  for (const m of text.matchAll(SOUND_TAGS)) {
+    const tag = m[0];
+    const end = m.index + tag.length;
+    if (/^[(（]/.test(tag) && !isSoundTag(tag, text.slice(0, m.index), text.slice(end))) continue;
+    pieces.push(text.slice(at, m.index));
+    at = end;
+  }
+  pieces.push(text.slice(at));
+  // Joined as written: no space where a tag sat between two pieces of Chinese or Japanese.
+  let out = joinTexts(pieces).replace(/\s+/g, ' ').trim();
   // A lone "you" on a very short clip is Whisper's classic output for a breath or a noise.
   if (clipSeconds < 2 && /^you[.!]?$/i.test(out)) out = '';
   return collapseRepeats(out);
