@@ -403,6 +403,11 @@ const SPLIT_MIN_SECONDS = 8;
 /** A clip's text, and whether Whisper doubted its first decode (see `transcribeClipChecked`). */
 export interface ClipTranscript {
   text: string;
+  /**
+   * The text with Whisper's captions and outros still in (`ClipVerdict.withCaptions`), which says
+   * whether Whisper heard anything: "ДИНАМИЧНАЯ МУЗЫКА" for a song is something, though not text.
+   */
+  withCaptions: string;
   doubtful: boolean;
   /** Average log-probability of Whisper's likelier decode of the clip (-Infinity without one). */
   confidence: number;
@@ -423,20 +428,22 @@ export async function transcribeClipChecked(
   language: string,
   canSplit = true,
 ): Promise<ClipTranscript> {
-  const { text, doubtful, confidence } = await transcribeClipPartly(asr, clip, language, canSplit);
-  return { text, doubtful, confidence };
+  const { text, withCaptions, doubtful, confidence } = await transcribeClipPartly(
+    asr,
+    clip,
+    language,
+    canSplit,
+  );
+  return { text, withCaptions, doubtful, confidence };
 }
 
-/**
- * `transcribeClipChecked`, whether the text is only the start of the clip's speech, and the text
- * with Whisper's captions and outros still in (`ClipVerdict.withCaptions`).
- */
+/** `transcribeClipChecked`, and whether the text is only the start of the clip's speech. */
 async function transcribeClipPartly(
   asr: AutomaticSpeechRecognitionPipeline,
   clip: Float32Array,
   language: string,
   canSplit: boolean,
-): Promise<ClipTranscript & { partial: boolean; withCaptions: string }> {
+): Promise<ClipTranscript & { partial: boolean }> {
   const seconds = clip.length / 16000;
   if (clip.length > 30 * 16000) {
     // Not used by the worker (clips are cut to ≤ 28 s), so no checks beyond the clean-up.

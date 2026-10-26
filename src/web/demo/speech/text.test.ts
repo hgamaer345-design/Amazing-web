@@ -47,6 +47,7 @@ describe('withoutCaptions', () => {
       'СТУК В ДВЕРЬ ДИНАМИЧНАЯ МУЗЫКА',
       'ВЫСТРЕЛЫ',
       'МУЗЫКАЛЬНАЯ ЗАСТАВКА',
+      'ВЕСЁЛАЯ МУЗЫКА',
       '[ OUTRO MUSIC PLAYING [',
     ]) {
       expect(withoutCaptions(t)).toBe('');
@@ -54,6 +55,12 @@ describe('withoutCaptions', () => {
     expect(withoutCaptions('Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА')).toBe('Раз, два, три.');
     expect(withoutCaptions('4,1. ДИНАМИЧНАЯ МУЗЫКА')).toBe('4,1.');
     expect(withoutCaptions('СМЕХ. Ну что, начнём?')).toBe('Ну что, начнём?');
+  });
+
+  it('keeps the captions Whisper was sure of: speech', () => {
+    // Said for real, Whisper Small wrote "НАТО! СМЕХ" (-0.25 for "СМЕХ").
+    expect(withoutCaptions('НАТО! СМЕХ', new Set(['смех']))).toBe('НАТО! СМЕХ');
+    expect(withoutCaptions('НАТО! СМЕХ', new Set(['музыка']))).toBe('НАТО!');
   });
 
   it('keeps speech in capitals: only whole caption phrases are captions, and digits are speech', () => {
@@ -75,6 +82,12 @@ describe('withoutCaptions', () => {
       'ПОЕХАЛИ ДИНАМИЧНАЯ МУЗЫКА',
       'Мы слушали музыку. Стук в дверь.',
       '我用了 HTML 和 CSS',
+      // Not the captions Whisper wrote: other music, and words it never wrote for noise.
+      'КАКАЯ МУЗЫКА!',
+      'НОВАЯ МУЗЫКА.',
+      'КЛАССИЧЕСКАЯ МУЗЫКА.',
+      'НАТО! АПЛОДИСМЕНТЫ!',
+      'ВЫСТРЕЛ!',
     ]) {
       expect(withoutCaptions(t)).toBe(t);
     }
@@ -93,6 +106,20 @@ describe('withoutCaptions', () => {
     expect(withoutCaptions('[Music I think so.')).toBe('I think so.');
     expect(withoutCaptions('[I think so.')).toBe('I think so.');
     expect(withoutCaptions('We are done.] [Music')).toBe('We are done.');
+  });
+
+  it('keeps a sound word that a sentence goes on from, and a capital that ends no tag', () => {
+    for (const [t, kept] of [
+      ['[Silence is golden.', 'Silence is golden.'],
+      ['[Cheers, mate!', 'Cheers, mate!'],
+      ['[Музыка играет громко.', 'Музыка играет громко.'],
+      ['[박수 쳐 주세요.', '박수 쳐 주세요.'],
+      ['[מוזיקה טובה', 'מוזיקה טובה'],
+      ['Vitamin [ C', 'Vitamin C'],
+      ['Это [ Я', 'Это Я'],
+    ]) {
+      expect(withoutCaptions(t!)).toBe(kept);
+    }
   });
 });
 
@@ -424,6 +451,9 @@ describe('stripHallucinationPhrases', () => {
       expect(stripHallucinationPhrases(decode)).toBe(' Всё.');
       expect(stripHallucinationPhrases(decode, undefined, false)).toBe(decode.text);
     }
+    // A caption Whisper was sure of is speech.
+    const laugh = decodeOf([...sure(' Всё.'), ...thanks, ' СМЕХ:-0.25']);
+    expect(stripHallucinationPhrases(laugh)).toBe(laugh.text);
   });
 });
 
@@ -482,6 +512,34 @@ describe('transcribeChecked', () => {
     });
     const outro = decodeOf([' 구독과:-0.9', ' 좋아요:-0.9', ' 부탁드립니다!:-0.9']);
     expect(await run(outro)).toMatchObject({ text: '', withCaptions: '구독과 좋아요 부탁드립니다!' });
+  });
+
+  it('keeps the captions Whisper was sure of', async () => {
+    // Whisper Small, "Смех!" said for real (-0.25); Tiny, music (-1.1).
+    expect(await run(decodeOf([' СМЕХ:-0.25']))).toMatchObject({ text: 'СМЕХ', withCaptions: 'СМЕХ' });
+    expect(await run(decodeOf([' СМЕХ:-1.1'], { end: -0.5 }))).toMatchObject({
+      text: '',
+      withCaptions: 'СМЕХ',
+    });
+  });
+
+  it('takes outros off the end of the text only, so no text hidden in a sound tag comes out', async () => {
+    for (const said of [
+      ' [♪ OUTRO MUSIC PLAYING [♪ Bye. 구독 좋아요 부탁드립니다. [Music]',
+      ' [♪ We are done. 구독과 좋아요 부탁드립니다! [Music]',
+      ' [ O ООН КРИК О ПОМОЩИ. ご視聴頂きありがとうございました。 [Music]',
+    ]) {
+      const decode = decodeOf(said.split(/(?= )/).map((w) => `${w}:-0.5`));
+      expect(await run(decode)).toMatchObject({ text: '', withCaptions: '' });
+    }
+    const said = decodeOf([
+      ...sure(' Bye.'),
+      ' 구독:-0.5',
+      ' 좋아요:-0.5',
+      ' 부탁드립니다.:-0.5',
+      ' [Music]:-0.5',
+    ]);
+    expect(await run(said)).toMatchObject({ text: 'Bye.', withCaptions: 'Bye. 구독 좋아요 부탁드립니다.' });
   });
 
   it('keeps the speech after a sentence said three times', async () => {

@@ -171,22 +171,38 @@ describe('transcribeClipChecked', () => {
     expect(out.text).toBe('The first half of the talk. And the second half.');
   });
 
-  it('keeps the caption Whisper writes for a half that is only music out of the text', async () => {
+  it('keeps the caption Whisper writes for a half that is only music out of the text, unless sure', async () => {
     const { words, ids } = vocabulary();
     const [go, bang, goLower] = ids(' Go', '!', ' go');
     const counted = ids(' Раз,', ' два,', ' три.');
     const caption = ids(' ДИНАМИЧНАЯ', ' МУЗЫКА');
     const clip = new Float32Array(10 * 16000).fill(0.5);
     clip.fill(0.2, 5 * 16000);
-    const script: Script = (text, heard) => {
-      if (heard.length === clip.length)
-        return text.at(-1) === go || text.at(-1) === goLower ? [bang!] : [go!, goLower!];
-      return follows(heard[0] === 0.5 ? counted : caption)(text, heard);
-    };
-    const { asr, passes } = fakeWhisper(words, script);
-    const out = await transcribeClipChecked(asr, clip, 'ru');
-    expect(passes.map((p) => p.text)).toContain(' ДИНАМИЧНАЯ МУЗЫКА');
-    expect(out.text).toBe('Раз, два, три.');
+    const unsure: Script = (text, heard) =>
+      text.length ? follows(caption)(text, heard) : [caption[0]!, END];
+    for (const [music, kept] of [
+      [unsure, 'Раз, два, три.'], // two choices at every step of the caption: -0.31
+      [follows(caption), 'Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА'], // one at its first: -0.16
+    ] as const) {
+      const script: Script = (text, heard) => {
+        if (heard.length === clip.length)
+          return text.at(-1) === go || text.at(-1) === goLower ? [bang!] : [go!, goLower!];
+        return (heard[0] === 0.5 ? follows(counted) : music)(text, heard);
+      };
+      const { asr, passes } = fakeWhisper(words, script);
+      const out = await transcribeClipChecked(asr, clip, 'ru');
+      expect(passes.map((p) => p.text)).toContain(' ДИНАМИЧНАЯ МУЗЫКА');
+      expect(out).toMatchObject({ text: kept, withCaptions: 'Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА' });
+    }
+  });
+
+  it('drops the captions of a clip over 30 s too, and gives the text with them', async () => {
+    const said = ' Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА [♪ OUTRO MUSIC PLAYING [♪';
+    const asr = (async () => ({ text: said })) as unknown as AutomaticSpeechRecognitionPipeline;
+    expect(await transcribeClipChecked(asr, clipOf(31), 'ru')).toMatchObject({
+      text: 'Раз, два, три.',
+      withCaptions: 'Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА [ OUTRO MUSIC PLAYING [',
+    });
   });
 
   it("weighs the halves with their captions and outros, so they don't tip the choice to a loop", async () => {

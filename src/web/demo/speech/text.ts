@@ -34,20 +34,25 @@ const SOUND_WORD = new RegExp(
   `^(?:(?:${SOUND_STEMS})(?:e?s|e|se|ing|ter|en|a|а|ы)?|(?:${SOUND_SIGNS})+)$`,
   'iu',
 );
+/**
+ * A word that goes on a sentence: in lower case, or in a script without case that spaces its words
+ * (Korean, Hebrew; not Chinese or Japanese, where a space after a word ends a tag).
+ */
+const GOES_ON =
+  /^\s*(?![\p{Lu}\p{Lt}\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}])\p{L}/u;
 
 /**
  * The captions of subtitles for the deaf that Whisper writes in capitals for music and noise: the
  * ones it wrote in our tests, as whole phrases. Other words in capitals are speech ("NASA, NATO.",
- * "ООН КРИК О ПОМОЩИ", "BBC MUSIC.").
+ * "ООН КРИК О ПОМОЩИ", "BBC MUSIC.", "КАКАЯ МУЗЫКА!", "АПЛОДИСМЕНТЫ!").
  */
 const CAPTION_PHRASES = [
-  '[А-ЯЁ]+[АЯ]Я МУЗЫКА', // ДИНАМИЧНАЯ, ВЕСЕЛАЯ, ИНТРИГУЮЩАЯ, ТРЕВОЖНАЯ, СПОКОЙНАЯ …
+  '(?:ДИНАМИЧНАЯ|ИНТРИГУЮЩАЯ|ВЕС[ЕЁ]ЛАЯ|ТРЕВОЖНАЯ|СПОКОЙНАЯ|ПЕЧАЛЬНАЯ) МУЗЫКА',
   'МУЗЫКА',
   'МУЗЫКАЛЬНАЯ ЗАСТАВКА',
   'СМЕХ',
-  'АПЛОДИСМЕНТЫ',
   'СТУК(?: В ДВЕРЬ)?',
-  'ВЫСТРЕЛЫ?',
+  'ВЫСТРЕЛЫ',
   '(?:(?:OUTRO|INTRO) )?MUSIC(?: PLAYING)?',
 ].join('|');
 /** Caption phrases and nothing else. */
@@ -66,9 +71,11 @@ function isCaption(sentence: string): boolean {
 /**
  * `rest`, the text after a bracket Whisper opened and never closed, without its first word if that
  * belongs to the tag, else null: notes or punctuation, a caption phrase ("OUTRO MUSIC PLAYING"), a
- * whole sound word ("Music", "音楽"), or a single capital where the text ends ("[♪ O", cut off).
+ * whole sound word no sentence goes on from ("Music", "音楽"; not "Silence is golden.", see
+ * `GOES_ON`), or, `afterTag` (an earlier bracket held a tag), a single capital where the text ends
+ * ("[♪ OUTRO MUSIC PLAYING [♪ O", cut off; not "Vitamin [ C").
  */
-function afterTagWord(rest: string, textEnds: boolean): string | null {
+function afterTagWord(rest: string, textEnds: boolean, afterTag: boolean): string | null {
   const start = rest.trimStart();
   const phrase = CAPTION_START.exec(start);
   if (phrase) return start.slice(phrase[0].length);
@@ -76,8 +83,9 @@ function afterTagWord(rest: string, textEnds: boolean): string | null {
   if (!word) return null;
   const after = start.slice(word.length);
   const core = word.replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, '');
-  const cutOff = textEnds && !after.trim() && /^\p{Lu}$/u.test(core);
-  return !core || SOUND_WORD.test(core) || cutOff ? after : null;
+  const soundWord = SOUND_WORD.test(core) && !GOES_ON.test(after);
+  const cutOff = afterTag && textEnds && !after.trim() && /^\p{Lu}$/u.test(core);
+  return !core || soundWord || cutOff ? after : null;
 }
 
 /**
@@ -86,11 +94,14 @@ function afterTagWord(rest: string, textEnds: boolean): string | null {
  * do other words in capitals: "[Music USA! USA!"), and without stray closing brackets.
  */
 function withoutUnclosedBrackets(text: string): string {
+  let afterTag = false;
   return text.replace(/[[［【]([^[［【\]］】]*)|[\]］】]/g, (tag, after: string | undefined, at: number) => {
     let rest = after ?? '';
     const textEnds = at + tag.length === text.length;
-    for (let next = afterTagWord(rest, textEnds); next !== null; next = afterTagWord(rest, textEnds)) {
+    for (let next = afterTagWord(rest, textEnds, afterTag); next !== null;) {
+      afterTag ||= /\p{L}/u.test(rest.slice(0, rest.length - next.length));
       rest = next;
+      next = afterTagWord(rest, textEnds, afterTag);
     }
     return rest;
   });
@@ -101,13 +112,14 @@ const SENTENCE = /[^.!?。！？]*[.!?。！？]+\s*|[^.!?。！？]+$/g;
 
 /**
  * The text without the captions of subtitles for the deaf that Whisper writes for music and noise:
- * sentences that are only caption phrases ("ДИНАМИЧНАЯ МУЗЫКА", "СТУК В ДВЕРЬ"; see `isCaption`)
- * and the brackets it never closed, with the tag after them ("[♪ OUTRO MUSIC PLAYING [♪"; see
- * `withoutUnclosedBrackets`). Single-spaced if anything went.
+ * sentences that are only caption phrases ("ДИНАМИЧНАЯ МУЗЫКА", "СТУК В ДВЕРЬ"; see `isCaption`),
+ * unless Whisper was `sure` of them (see `sureCaptions`), and the brackets it never closed, with
+ * the tag after them ("[♪ OUTRO MUSIC PLAYING [♪"; see `withoutUnclosedBrackets`). Single-spaced
+ * if anything went.
  */
-export function withoutCaptions(text: string): string {
+export function withoutCaptions(text: string, sure: ReadonlySet<string> = new Set()): string {
   const parts = withoutUnclosedBrackets(text).match(SENTENCE) ?? [];
-  const kept = parts.filter((s) => !isCaption(s)).join('');
+  const kept = parts.filter((s) => !isCaption(s) || sure.has(normalizePhrase(s))).join('');
   return kept === text ? text : kept.replace(/\s+/g, ' ').trim();
 }
 
@@ -256,7 +268,10 @@ export const HALLUCINATION_LIMITS = {
   noSpeech: 0.6,
   /** …when its average log-probability is also below this. */
   noSpeechLogprob: -1,
-  /** A known hallucination phrase ending a clip is kept only if its tokens average at least this. */
+  /**
+   * A known hallucination phrase ending a clip, or a caption anywhere (see `sureCaptions`), is kept
+   * only if its tokens average at least this.
+   */
   phraseLogprob: -0.3,
   /** A token pattern of up to this many tokens repeating back to back is a loop… */
   loopMaxPeriod: 64,
@@ -670,13 +685,32 @@ function meanLogprob(tokens: readonly Pick<ScoredToken, 'logprob'>[]): number {
 }
 
 /**
+ * The decode's captions (sentences `isCaption` accepts) that Whisper was sure of (`phraseLogprob`),
+ * normalised: speech, such as "Смех!" said for real, which Whisper Small writes in capitals (-0.25).
+ * Of the captions Tiny and Base wrote for music and noise in our tests, only "МУЗЫКАЛЬНАЯ ЗАСТАВКА"
+ * on two clips was that sure (-0.15); all others averaged -0.3 or less.
+ */
+export function sureCaptions(
+  decode: ClipDecode,
+  limits: HallucinationLimits = HALLUCINATION_LIMITS,
+): Set<string> {
+  const sure = new Set<string>();
+  for (const s of sentences(decode.tokens)) {
+    const text = withoutSoundTags(decode.detokenize(idsOf(s)));
+    if (meanLogprob(s) >= limits.phraseLogprob && isCaption(text)) sure.add(normalizePhrase(text));
+  }
+  return sure;
+}
+
+/**
  * Removes known hallucination phrases ("Thank you for watching.", "Subtitles by …") from the end
  * of the clip's text (which may be all of it) unless Whisper was confident of them: a real
  * "Thank you." is decoded with high probability, one invented for silence or noise is not.
  * Whisper adds them where a clip trails off into silence; one followed by more speech is kept (a
- * sound tag such as "[Music]" or "♪", or a caption such as "ДИНАМИЧНАЯ МУЗЫКА", is not speech).
- * Without `outros`, the outros (`HALLUCINATION_OUTROS`) and captions (`withoutCaptions`) count as
- * speech, as where a split clip's halves are weighed (`ClipVerdict.withCaptions`).
+ * sound tag such as "[Music]" or "♪", or a caption Whisper wasn't sure of such as "ДИНАМИЧНАЯ
+ * МУЗЫКА", is not speech). Without `outros`, the outros (`HALLUCINATION_OUTROS`) and captions
+ * (`withoutCaptions`) count as speech, as where a split clip's halves are weighed
+ * (`ClipVerdict.withCaptions`).
  */
 export function stripHallucinationPhrases(
   decode: ClipDecode,
@@ -687,7 +721,8 @@ export function stripHallucinationPhrases(
   const text = (s: readonly ScoredToken[]) => decode.detokenize(idsOf(s));
   const doubtful = (s: readonly ScoredToken[]) =>
     meanLogprob(s) < limits.phraseLogprob && isHallucinationPhrase(text(s), outros);
-  const speech = (t: string) => (outros ? withoutCaptions(withoutSoundTags(t)) : withoutSoundTags(t));
+  const sure = outros ? sureCaptions(decode, limits) : new Set<string>();
+  const speech = (t: string) => (outros ? withoutCaptions(withoutSoundTags(t), sure) : withoutSoundTags(t));
   const tagOnly = (s: readonly ScoredToken[]) => normalizePhrase(speech(text(s))) === '';
   let keep = parts.length;
   for (let i = parts.length - 1; i >= 0; i--) {
@@ -705,7 +740,7 @@ export interface ClipVerdict {
   /**
    * The text with Whisper's captions and outros still in (see `withoutCaptions`,
    * `HALLUCINATION_OUTROS`): what a split clip's halves are weighed by, as they may be all that a
-   * half of music gives.
+   * half of music gives, and what says whether Whisper heard anything (the worker's choices).
    */
   withCaptions: string;
   /** Why Whisper's text was dropped (all of it, or the hallucinated phrases). */
@@ -753,7 +788,7 @@ function withoutBrokenCharacter(decode: ClipDecode): ClipDecode {
  * most of the loops and invented sentences we measured, and the better decode is used: one without
  * a loop if it is likely enough, else the decode with its loops taken out (`deloop`). Silence, text
  * that stays unlikely, and known hallucination phrases Whisper isn't sure of are dropped, and so
- * are its captions (`withoutCaptions`).
+ * are the captions it isn't sure of (`withoutCaptions`, `sureCaptions`).
  */
 export async function transcribeChecked(
   decode: (timestamps: boolean, wholeBudget: boolean) => Promise<ClipDecode>,
@@ -798,8 +833,13 @@ export async function transcribeChecked(
   best = withoutBrokenCharacter(best);
   const partial = best.endLogprob === null;
   const stripped = stripHallucinationPhrases(best, limits);
-  const text = withoutCaptions(cleanTranscript(stripped, clipSeconds));
   const withCaptions = cleanTranscript(stripHallucinationPhrases(best, limits, false), clipSeconds);
+  // What `stripped` drops beyond that (outros, and phrases before a caption) comes off the end of
+  // that text only: in "[♪ Bye. 구독 좋아요 부탁드립니다. [Music]" the outro's tag closes the bracket
+  // that hides "Bye.", so there the outro stays.
+  const cleaned = cleanTranscript(stripped, clipSeconds);
+  const kept = withCaptions.startsWith(cleaned) ? cleaned : withCaptions;
+  const text = withoutCaptions(kept, sureCaptions(best, limits));
   return stripped === best.text
     ? { text, withCaptions, retried, partial }
     : { text, withCaptions, dropped: 'phrase', retried, partial };

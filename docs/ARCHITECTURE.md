@@ -450,11 +450,18 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   - so do the captions of subtitles for the deaf that Whisper writes in capitals for music and
     noise: a sentence made only of the caption phrases it wrote in our tests ("ДИНАМИЧНАЯ
     МУЗЫКА", "СТУК В ДВЕРЬ", "СМЕХ", "OUTRO MUSIC PLAYING"; not "ООН КРИК О ПОМОЩИ", "BBC
-    MUSIC.", "КРИКЕТ." or "1, 2, 3 ДИНАМИЧНАЯ МУЗЫКА"), and a bracket Whisper never closed with
-    the tag right after it (caption phrases, notes, whole sound words: "[♪ OUTRO MUSIC PLAYING
-    [♪" goes; "OK, let's start." after "[MUSIC PLAYING" and "USA! USA!" after "[Music" stay),
-    and a stray closing bracket. A split clip's halves are still weighed against its cut-off
-    text with their captions and outros in, as they may be all that a half of music gives.
+    MUSIC.", "КРИКЕТ.", "КАКАЯ МУЗЫКА!", "АПЛОДИСМЕНТЫ!" or "1, 2, 3 ДИНАМИЧНАЯ МУЗЫКА") whose
+    tokens average < -0.3 (Small wrote "Смех!" said for real as "СМЕХ" at -0.25; Tiny and Base
+    wrote every caption for music and noise at -0.3 or less but "МУЗЫКАЛЬНАЯ ЗАСТАВКА", -0.15),
+    and a bracket Whisper never closed with the tag right after it (caption phrases, notes,
+    whole sound words no sentence goes on from, a single capital ending the text after a tag:
+    "[♪ OUTRO MUSIC PLAYING [♪ O" goes; "OK, let's start." after "[MUSIC PLAYING", "USA! USA!"
+    after "[Music", "Silence is golden." and "Vitamin C" stay), and a stray closing bracket.
+    Outros and captions come off the end of the text only: where the outro's "[Music]" closes a
+    bracket that hides earlier text, the outro stays. A split clip's halves are still weighed
+    against its cut-off text with their captions and outros in, as they may be all that a half
+    of music gives, and the worker's choices for a turn (its language checked again, a model
+    that hears nothing) still count a caption as something heard.
 
   Measured per clip against a Parakeet-TDT reference on 637 Whisper Tiny clips (a real 5.5 min
   interview under five diarizations, AMI and earnings-call excerpts, the TTS conversations, real
@@ -498,6 +505,21 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   in 4 of 8 conditions; Base kept it in all 8, and Korean goes to SenseVoice, with Whisper only
   as its fallback. The 637 Tiny clips (6284 correct, 1088 wrong, 13026 decoder steps) and the
   107 recordings at their own level: unchanged.
+
+  Its review found two more problems. The worker decided by the caption-free text, so where
+  Whisper's re-check in the turn's detected language gave only a caption or outro, the turn kept
+  its first, doubtful text in the speaker's language ("The African-American African-American …"
+  instead of "ДИНАМИЧНАЯ МУЗЫКА", "Good job, 부탁드립니다." instead of "구독 부탁드립니다!"): the
+  worker now decides by the text with its captions, as before, and shows the text without them.
+  And Small writes real Russian speech in capitals now and then ("НАТО! АПЛОДИСМЕНТЫ!", "СМЕХ"
+  for "Смех!" said after a song), which went as captions: hence the -0.3 floor for captions, the
+  closed list of adjectives before "МУЗЫКА" ("КАКАЯ МУЗЫКА!" stays) and no "АПЛОДИСМЕНТЫ", which
+  Whisper never wrote for noise. In 13,414 runs on Tiny, Base and Small (the runs above and the
+  reviewers' spoken captions, acronyms, outros and new music and noise mixes), no decode,
+  whole-vs-halves choice or worker decision changed, the text with captions was the deployed
+  text in every run, no word was added, and 262 texts lost a caption or outro; 8 of them were
+  outros said for real (Tiny 7, Base 1), as the outro list implies. The worker's re-check,
+  simulated on 4,273 turns (Tiny, Base, Small), chose as before in all of them.
 
 - After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
   memory); model errors are reported either as download problems or as "couldn't start" (memory).
