@@ -300,6 +300,7 @@ export function UploadPanel() {
             }}
             usage={usage}
             now={now}
+            recommended={config.defaultQuality}
           />
           {notice && (
             <div className="alert alert-info" role="status">

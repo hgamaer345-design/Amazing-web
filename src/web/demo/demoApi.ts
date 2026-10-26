@@ -34,11 +34,15 @@ import {
 import { ApiError } from '../apiError';
 import type { SpeechEngine } from './speech/engine';
 import type { SpeechProgress } from './speech/protocol';
+import { LITE_DEVICE } from './device';
 import { getDemoStore, type DemoRecord } from './store';
 
 const MAX_SPEAKERS = 10;
-/** Longest recording the in-browser engine takes: the whole file is decoded in memory at once. */
-export const MAX_DEMO_DURATION_SEC = 90 * 60;
+/**
+ * Longest recording the in-browser engine takes: the whole file is decoded in memory at once, and
+ * phones give a page far less memory than computers.
+ */
+export const MAX_DEMO_DURATION_SEC = (LITE_DEVICE ? 30 : 90) * 60;
 const LIMITS: Record<QualityMode, number | null> = {
   standard: null,
   high: null,
@@ -65,6 +69,9 @@ const BROWSER_MODES: Record<QualityMode, Pick<QualityModeInfo, 'tagline' | 'desc
   },
 };
 
+/** On phones, the larger models can exhaust the memory a browser tab is allowed. */
+const PHONE_NOTE = ' On a phone it can run out of memory: Standard is recommended here.';
+
 export const DEMO_CONFIG: AppConfigResponse = {
   provider: 'mock',
   providerConfigured: true,
@@ -73,8 +80,13 @@ export const DEMO_CONFIG: AppConfigResponse = {
   supportsSpeakerCount: true,
   maxSpeakers: MAX_SPEAKERS,
   demoMode: true,
-  qualityModes: qualityModeInfo(LIMITS).map((m) => ({ ...m, ...BROWSER_MODES[m.id] })),
-  defaultQuality: DEFAULT_QUALITY_MODE,
+  qualityModes: qualityModeInfo(LIMITS).map((m) => {
+    const info = { ...m, ...BROWSER_MODES[m.id] };
+    if (LITE_DEVICE && m.id !== 'standard') info.description += PHONE_NOTE;
+    return info;
+  }),
+  // Whisper Tiny is the one that comfortably fits a phone's memory.
+  defaultQuality: LITE_DEVICE ? 'standard' : DEFAULT_QUALITY_MODE,
 };
 
 // ---------------------------------------------------------------------------
@@ -381,7 +393,7 @@ async function processJob(picked: DemoRecord): Promise<void> {
       if (entry.cancelled) return;
       const job = engine.run(
         audio,
-        { quality: claimed.quality, speakersExpected: claimed.speakersExpected },
+        { quality: claimed.quality, speakersExpected: claimed.speakersExpected, lite: LITE_DEVICE },
         (progress) => {
           entry.progress = progress;
           const now = Date.now();
@@ -452,6 +464,13 @@ function speechError(code: string | undefined, detail: string | undefined): Tran
         'TRANSCRIPTION_FAILED',
         `This recording is too long to decode on this device. Try a shorter recording, or the full app for ` +
           `long files.`,
+        detail,
+      );
+    case 'OUT_OF_MEMORY':
+      return jobError(
+        'TRANSCRIPTION_FAILED',
+        'This device ran out of memory while transcribing. Try the Standard quality or a shorter recording, ' +
+          'or use a computer.',
         detail,
       );
     case 'MODEL_LOAD':
@@ -773,8 +792,9 @@ export function uploadTranscript(
       if ((options.clientDurationSec ?? 0) > MAX_DEMO_DURATION_SEC) {
         fail(
           'FILE_TOO_LARGE',
-          `The in-browser demo handles recordings up to ${MAX_DEMO_DURATION_SEC / 60} minutes. For longer ` +
-            'files, use the full app with a speech-to-text API key.',
+          `The in-browser demo handles recordings up to ${MAX_DEMO_DURATION_SEC / 60} minutes` +
+            `${LITE_DEVICE ? ' on this device' : ''}. For longer files, use a computer or the full app with a ` +
+            'speech-to-text API key.',
           413,
         );
       }

@@ -39,20 +39,24 @@ export const DIARIZATION_SETTINGS = {
 
 const CACHE_NAME = 'speaker-transcriber-models-v1';
 let configured = false;
+let lite = false;
 
-/** Points ONNX Runtime at the WebAssembly files bundled with the site and picks a thread count. */
-export function configureRuntime(): void {
+/**
+ * Points ONNX Runtime at the WebAssembly files bundled with the site and picks a thread count.
+ * The first call decides; `liteDevice` (a phone) runs single-threaded, which iOS handles far better.
+ */
+export function configureRuntime(liteDevice = false): void {
   if (configured) return;
   configured = true;
+  lite = liteDevice;
   const wasmPaths = {
     mjs: new URL(ortMjsUrl, self.location.href).href,
     wasm: new URL(ortWasmUrl, self.location.href).href,
   };
   ort.env.wasm.wasmPaths = wasmPaths;
   // Threads need cross-origin isolation (provided by the coi-serviceworker on GitHub Pages).
-  ort.env.wasm.numThreads = self.crossOriginIsolated
-    ? Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1))
-    : 1;
+  ort.env.wasm.numThreads =
+    self.crossOriginIsolated && !lite ? Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1)) : 1;
   // transformers.js shares this ONNX Runtime instance (and so these settings); Whisper comes from
   // the hub, never from this site's own /models/ folder.
   env.allowLocalModels = false;
@@ -84,6 +88,11 @@ function isDownloadError(err: unknown): boolean {
       errorMessage(err),
     )
   );
+}
+
+/** On phones, return freed memory instead of keeping ONNX Runtime's arena and buffer plans. */
+function liteSessionOptions(): ort.InferenceSession.SessionOptions {
+  return lite ? { enableCpuMemArena: false, enableMemPattern: false } : {};
 }
 
 export type ByteProgress = (loaded: number, total: number) => void;
@@ -147,7 +156,10 @@ export function loadSpeakerModels(onProgress: ByteProgress) {
     ]).catch((err: unknown) => {
       throw new ModelLoadError('download', errorMessage(err));
     });
-    const options: ort.InferenceSession.SessionOptions = { executionProviders: ['wasm'] };
+    const options: ort.InferenceSession.SessionOptions = {
+      executionProviders: ['wasm'],
+      ...liteSessionOptions(),
+    };
     try {
       return {
         segmentation: await ort.InferenceSession.create(segBytes, options),
@@ -215,6 +227,7 @@ export function loadWhisper(
       return (await pipeline('automatic-speech-recognition', WHISPER_MODELS[mode].id, {
         dtype: 'q8',
         device: 'wasm',
+        session_options: liteSessionOptions(),
         progress_callback: (info) => {
           if (info.status === 'progress_total') onProgress(info.loaded, info.total);
         },

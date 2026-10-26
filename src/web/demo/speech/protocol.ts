@@ -4,6 +4,8 @@ import type { QualityMode } from '../../../shared/types';
 export interface SpeechJobOptions {
   quality: QualityMode;
   speakersExpected: number | null;
+  /** Low-memory device (phone): one thread, capped heap, smaller batches. */
+  lite?: boolean;
 }
 
 export type SpeechStage = 'loading' | 'speakers' | 'transcribing';
@@ -31,7 +33,7 @@ export interface SpeechResult {
 }
 
 /** MODEL_DOWNLOAD: a model couldn't be fetched; MODEL_LOAD: it couldn't be started (usually memory). */
-export type SpeechErrorCode = 'NO_SPEECH' | 'MODEL_DOWNLOAD' | 'MODEL_LOAD' | 'FAILED';
+export type SpeechErrorCode = 'NO_SPEECH' | 'MODEL_DOWNLOAD' | 'MODEL_LOAD' | 'OUT_OF_MEMORY' | 'FAILED';
 
 export type WorkerRequest = { type: 'run'; jobId: string; audio: Float32Array; options: SpeechJobOptions };
 

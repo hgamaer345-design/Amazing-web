@@ -185,9 +185,15 @@ in which everything happens in the browser:
 - **Speed** depends on the device and the mode. On a busy 4-core test machine a 5½-minute,
   4-speaker recording took about 4 minutes in Standard; High takes longer and Ultra High several
   times longer, while recent laptops are faster. A desktop browser (Chrome, Edge, Firefox or Safari)
-  is recommended for long files; phones work but are slower. Recordings up to 90 minutes are
-  accepted. A small service worker ([coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker))
-  enables multi-threading, which is why the page reloads once on the first visit.
+  is recommended for long files; recordings up to 90 minutes are accepted. On computers a small
+  service worker ([coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)) enables
+  multi-threading, which is why the page reloads once on the first visit.
+- **Phones** give a web page much less memory (iOS closes a tab that uses more than roughly
+  1–1.5 GB, without warning), so on iPhones, iPads, Android phones and other low-memory devices the
+  demo runs a lighter configuration: one thread, a capped WebAssembly heap, Standard quality by
+  default, and recordings up to 30 minutes. High and Ultra High can still run out of memory there.
+  If the page is closed while transcribing (or crashes), the job is not restarted automatically;
+  press Retry, ideally with Standard. Keep the screen on and Safari in front while it works.
 - History is stored in your browser (IndexedDB) and exports are generated in the browser.
 
 Building and publishing:
@@ -285,6 +291,7 @@ More detail on the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **The demo says the speech models couldn't be downloaded** — the browser couldn't reach
   `huggingface.co` (Whisper) or the site's `models/` folder; check the connection, ad blockers or a
   network filter, then press Retry.
-- **The demo is slow, or says the device couldn't start the speech model** — the device ran low on
-  memory or is slow: choose Standard (or High instead of Ultra High), close other tabs, or use a
-  desktop browser. For recordings longer than about an hour, use the full app with an API key.
+- **The demo is slow, says the device ran out of memory, or Safari shows "A problem repeatedly
+  occurred"** — the device ran low on memory (common on phones): choose Standard, use a shorter
+  recording, close other tabs, or use a computer. For recordings longer than about an hour, use the
+  full app with an API key.

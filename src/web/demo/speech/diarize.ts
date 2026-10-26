@@ -41,6 +41,8 @@ export interface DiarizationOptions {
    * Unmatched speakers still get an embedding. 0 or unset = embed every window (the reference).
    */
   embedStride?: number;
+  /** Windows segmented per model run (fewer use less memory). */
+  segmentBatch?: number;
   /** Up to this many windows, local speakers of one window are never clustered together. */
   cannotLinkMaxWindows?: number;
   /** Least speech (seconds) a local speaker needs in a window to get its own embedding. */
@@ -203,7 +205,7 @@ export async function diarize(
 
   // 1. Segmentation, a few windows at a time.
   const labels: Labels = [];
-  const batch = 8;
+  const batch = options.segmentBatch ?? 8;
   for (let i = 0; i < starts.length; i += batch) {
     const windows = starts.slice(i, i + batch).map((s) => windowAt(audio, s, windowSize));
     const logits = await models.segment(windows);

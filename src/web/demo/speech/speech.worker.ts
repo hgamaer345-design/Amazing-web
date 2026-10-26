@@ -4,7 +4,9 @@
 import { formatBytes } from '../../../shared/time';
 import type { QualityMode } from '../../../shared/types';
 import { diarize } from './diarize';
+import { capWasmMemory } from './memoryCap';
 import {
+  configureRuntime,
   DIARIZATION_SETTINGS,
   detectLanguage,
   loadSpeakerModels,
@@ -23,6 +25,15 @@ const SAMPLE_RATE = 16000;
  * every mode while Whisper's cost grows with its size; measured on a 5.5-minute conversation.
  */
 const SPEAKERS_SHARE: Record<QualityMode, number> = { standard: 0.3, high: 0.2, ultra: 0.1 };
+
+/** WebAssembly heap limit on phones (ONNX Runtime declares 4 GiB, which iOS can't back). */
+const LITE_HEAP_BYTES = 1024 * 1024 * 1024;
+
+/** ONNX Runtime / Emscripten report exhausted memory in several ways. */
+function isOutOfMemory(err: unknown): boolean {
+  const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
+  return /out of memory|OOM|memory access out of bounds|Cannot enlarge memory|allocat|RangeError/i.test(text);
+}
 
 function post(message: WorkerResponse): void {
   self.postMessage(message);
@@ -44,6 +55,11 @@ async function run({ jobId, audio, options }: WorkerRequest): Promise<void> {
   const settings = DIARIZATION_SETTINGS;
   const speakersShare = SPEAKERS_SHARE[options.quality];
 
+  if (options.lite) {
+    // Phones: a bounded heap turns "iOS killed the tab" into an error we can report.
+    capWasmMemory(LITE_HEAP_BYTES);
+  }
+  configureRuntime(options.lite);
   progress('loading', 'Preparing speech models…', null);
   let sessions;
   let asr;
@@ -87,6 +103,7 @@ async function run({ jobId, audio, options }: WorkerRequest): Promise<void> {
       embedStride: settings.embedStrideSec * SAMPLE_RATE,
       minEmbedSpeech: settings.minEmbedSpeechSec,
       numSpeakers: options.speakersExpected,
+      segmentBatch: options.lite ? 2 : 8,
     },
     (f) => progress('speakers', 'Finding the speakers…', f * speakersShare),
   );
@@ -122,7 +139,7 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
   if (request.type !== 'run') return;
   run(request).catch((err: unknown) => {
-    const code = err instanceof JobError ? err.code : 'FAILED';
+    const code = err instanceof JobError ? err.code : isOutOfMemory(err) ? 'OUT_OF_MEMORY' : 'FAILED';
     const message = err instanceof Error ? err.message : String(err);
     post({ type: 'error', jobId: request.jobId, code, message });
   });

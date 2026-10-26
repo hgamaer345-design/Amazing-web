@@ -96,7 +96,7 @@ describe('demo API (in-browser transcription)', () => {
     expect(summary).toMatchObject({ title: 'Team call', status: 'queued', quality: 'high' });
 
     const job = await nextJob(1);
-    expect(job.options).toEqual({ quality: 'high', speakersExpected: 2 });
+    expect(job.options).toEqual({ quality: 'high', speakersExpected: 2, lite: false });
     job.progress({ stage: 'speakers', message: 'Finding the speakers… 40%', fraction: 0.1 });
     const running = await demo.getTranscript(summary.id);
     expect(running.status).toBe('transcribing');

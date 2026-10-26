@@ -4,6 +4,7 @@ import { ERROR_MESSAGES } from '../../shared/errors';
 import type { TranscriptDetail, TranscriptSummary } from '../../shared/types';
 import { ApiError, getTranscript, isDemoMode, retryTranscript } from '../api';
 import ProcessingSteps from '../components/ProcessingSteps';
+import { LITE_DEVICE } from '../demo/device';
 import { DeleteTranscriptButton } from '../components/editor/DeleteActions';
 import { TranscriptEditor } from '../components/editor/TranscriptEditor';
 import '../components/editor/editor.css';
@@ -158,10 +159,13 @@ function TranscriptView({ id }: { id: string }) {
             </p>
           )}
           <p className="field-hint">
-            {isDemoMode
-              ? 'Transcription runs in this browser tab: you can open other pages here or switch tabs, but keep ' +
-                'this tab open until it finishes.'
-              : 'You can leave this page; the transcript will keep processing on the server.'}
+            {!isDemoMode
+              ? 'You can leave this page; the transcript will keep processing on the server.'
+              : LITE_DEVICE
+                ? 'Transcription runs on this phone: keep this page open, the screen on and the browser in ' +
+                  'front until it finishes.'
+                : 'Transcription runs in this browser tab: you can open other pages here or switch tabs, but ' +
+                  'keep this tab open until it finishes.'}
           </p>
           <div className="tx-state-actions">
             <Link to="/" className="btn">

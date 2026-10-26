@@ -9,6 +9,8 @@ export interface QualityPickerProps {
   usage: UsageResponse | null;
   now: number;
   disabled?: boolean;
+  /** The mode marked "Recommended" (the configured default). */
+  recommended?: QualityMode;
 }
 
 /** Remaining free uses today, or null when the mode is unlimited (or usage isn't known yet). */
@@ -42,7 +44,15 @@ function SparkleIcon() {
 }
 
 /** Three selectable cards (a native radio group, so arrow keys move the selection). */
-export function QualityPicker({ modes, value, onChange, usage, now, disabled }: QualityPickerProps) {
+export function QualityPicker({
+  modes,
+  value,
+  onChange,
+  usage,
+  now,
+  disabled,
+  recommended = 'high',
+}: QualityPickerProps) {
   const name = useId();
   const selected = modes.find((m) => m.id === value) ?? modes[0];
 
@@ -74,7 +84,7 @@ export function QualityPicker({ modes, value, onChange, usage, now, disabled }: 
                   {mode.id === 'ultra' && <SparkleIcon />}
                   {mode.label}
                 </span>
-                {mode.id === 'high' && <span className="badge badge-info">Recommended</span>}
+                {mode.id === recommended && <span className="badge badge-info">Recommended</span>}
                 <span className="quality-check" aria-hidden="true" />
               </span>
               <span className="quality-tagline">{mode.tagline}</span>

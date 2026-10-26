@@ -40,8 +40,13 @@ fs.writeFileSync(
     charset,
     // Always "require-corp": Safari ignores COEP "credentialless" (the library's default there)
     // and would never be cross-origin isolated. The only cross-origin fetches (Hugging Face) use
-    // CORS, which require-corp allows.
-    `${charset}\n    <script>window.coi = { coepCredentialless: () => false, quiet: true };</script>` +
+    // CORS, which require-corp allows. On iPhone and iPad the demo runs single-threaded (iOS
+    // handles multi-threaded WebAssembly badly and kills the tab), so isolation isn't needed: no
+    // service worker there, and one installed by an earlier version is removed.
+    `${charset}\n    <script>(() => { const appleMobile = /iP(hone|ad|od)/.test(navigator.userAgent) || ` +
+      `(/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1); window.coi = { ` +
+      `coepCredentialless: () => false, shouldRegister: () => !appleMobile, ` +
+      `shouldDeregister: () => appleMobile, quiet: true }; })();</script>` +
       `\n    <script src="${process.env.VITE_BASE}coi-serviceworker.js"></script>`,
   ),
 );
