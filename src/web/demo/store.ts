@@ -32,6 +32,8 @@ export interface DemoRecord {
   attempts?: number;
   /** Identifies the current processing run; results of an older run are discarded. */
   runId?: string | null;
+  /** Language the user said the recording is in; null or absent (older records) = detected. */
+  requestedLanguage?: string | null;
   languageCode: string | null;
   error: TranscriptError | null;
   document: { version: number; speakers: Speaker[]; rows: TranscriptRow[] } | null;

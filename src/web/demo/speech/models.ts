@@ -1,24 +1,36 @@
 // Model loading for the speech worker: ONNX Runtime set-up, the two speaker models (served from
-// this site) and Whisper (downloaded from the Hugging Face hub by transformers.js). Everything
-// is cached by the browser after the first run.
+// this site), Whisper (downloaded from the Hugging Face hub by transformers.js) and the other
+// speech-to-text models (sensevoice.ts, omnilingual.ts). Everything is cached by the browser
+// after the first run.
 import { env, pipeline, Tensor, type AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers';
 import * as ort from 'onnxruntime-web/webgpu';
 import ortMjsUrl from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
-import type { QualityMode } from '../../../shared/types';
+import { joinTexts } from '../../../shared/text';
 import type { DiarizationModels } from './diarize';
 import { fetchCached, modelUrl, type ByteProgress } from './download';
 export type { ByteProgress } from './download';
 import { computeFbank, subtractMean } from './fbank';
+import { loadOmnilingual, OMNILINGUAL_MB } from './omnilingual';
 import { stripOutputs, UNUSED_WHISPER_OUTPUT } from './onnxOutputs';
-import { cleanTranscript, hasLoop, transcribeChecked, type ClipDecode } from './text';
+import type { Recognizer, RecognizerId } from './recognizer';
+import { isWhisper, rankLanguages, whisperLanguage, type LanguageGuess, type WhisperId } from './routing';
+import { loadSenseVoice, SENSEVOICE_MB } from './sensevoice';
+import { averageLogprob, cleanTranscript, hasLoop, transcribeChecked, type ClipDecode } from './text';
 import { splitLongTurns } from './turns';
 
-/** Whisper model per quality mode (multilingual; 8-bit quantized for WebAssembly). */
-export const WHISPER_MODELS: Record<QualityMode, { id: string; label: string; approxMB: number }> = {
-  standard: { id: 'Xenova/whisper-tiny', label: 'Whisper Tiny', approxMB: 41 },
-  high: { id: 'Xenova/whisper-base', label: 'Whisper Base', approxMB: 77 },
-  ultra: { id: 'Xenova/whisper-small', label: 'Whisper Small', approxMB: 249 },
+/** Whisper models (multilingual; 8-bit quantized for WebAssembly). */
+export const WHISPER_MODELS: Record<WhisperId, { id: string; label: string; approxMB: number }> = {
+  'whisper-tiny': { id: 'Xenova/whisper-tiny', label: 'Whisper Tiny', approxMB: 41 },
+  'whisper-base': { id: 'Xenova/whisper-base', label: 'Whisper Base', approxMB: 77 },
+  'whisper-small': { id: 'Xenova/whisper-small', label: 'Whisper Small', approxMB: 249 },
+};
+
+/** Name and approximate download size of every speech-to-text model, for progress messages. */
+export const RECOGNIZER_INFO: Record<RecognizerId, { label: string; approxMB: number }> = {
+  ...WHISPER_MODELS,
+  sensevoice: { label: 'SenseVoice', approxMB: SENSEVOICE_MB },
+  omnilingual: { label: 'Omnilingual ASR', approxMB: OMNILINGUAL_MB },
 };
 
 /** Speaker models shipped with the site (see scripts/fetch-speech-models.mjs). */
@@ -190,21 +202,21 @@ export function speakerModelRunners(
   };
 }
 
-let whisper: { mode: QualityMode; asr: Promise<AutomaticSpeechRecognitionPipeline> } | null = null;
+let whisper: { size: WhisperId; asr: Promise<AutomaticSpeechRecognitionPipeline> } | null = null;
 
-/** Loads (once per mode) the Whisper pipeline, reporting download progress. */
+/** Loads (once per size) the Whisper pipeline, reporting download progress. */
 export function loadWhisper(
-  mode: QualityMode,
+  size: WhisperId,
   onProgress: ByteProgress,
 ): Promise<AutomaticSpeechRecognitionPipeline> {
-  if (whisper?.mode === mode) return whisper.asr;
+  if (whisper?.size === size) return whisper.asr;
   const previous = whisper;
   configureRuntime();
   const asr = (async () => {
     // Free the previous model's memory before loading another size.
     if (previous) await (await previous.asr.catch(() => null))?.dispose();
     try {
-      return (await pipeline('automatic-speech-recognition', WHISPER_MODELS[mode].id, {
+      return (await pipeline('automatic-speech-recognition', WHISPER_MODELS[size].id, {
         dtype: 'q8',
         device: 'wasm',
         session_options: liteSessionOptions(),
@@ -216,27 +228,35 @@ export function loadWhisper(
       throw new ModelLoadError(isDownloadError(err) ? 'download' : 'load', errorMessage(err));
     }
   })();
-  whisper = { mode, asr };
+  whisper = { size, asr };
   asr.catch(() => {
     if (whisper?.asr === asr) whisper = null;
   });
   return asr;
 }
 
+/** Frees Whisper `size` if it is the one loaded. */
+async function disposeWhisper(size: WhisperId): Promise<void> {
+  if (whisper?.size !== size) return;
+  const { asr } = whisper;
+  whisper = null;
+  await (await asr.catch(() => null))?.dispose();
+}
+
 /**
- * Detects the spoken language: one decoder step after <|startoftranscript|>, choosing the most
- * likely language token. (transformers.js otherwise assumes English for multilingual models.)
+ * Detects the spoken language: one decoder step after <|startoftranscript|>, with the language
+ * tokens' probabilities. (transformers.js otherwise assumes English for multilingual models.)
  */
 export async function detectLanguage(
   asr: AutomaticSpeechRecognitionPipeline,
   sample: Float32Array,
-): Promise<string> {
+): Promise<LanguageGuess> {
   const { input_features } = (await asr.processor(sample)) as { input_features: Tensor };
   const config = asr.model.generation_config as unknown as {
     decoder_start_token_id: number;
     lang_to_id?: Record<string, number>;
   };
-  if (!config.lang_to_id) return 'en';
+  if (!config.lang_to_id) return rankLanguages([]);
   const model = asr.model as unknown as (inputs: Record<string, Tensor>) => Promise<{ logits: Tensor }>;
   const { logits } = await model({
     input_features,
@@ -249,12 +269,12 @@ export async function detectLanguage(
   const vocab = logits.dims[logits.dims.length - 1]!;
   const data = logits.data as Float32Array;
   const base = data.length - vocab;
-  let best = { code: 'en', score: Number.NEGATIVE_INFINITY };
-  for (const [token, id] of Object.entries(config.lang_to_id)) {
-    const score = data[base + id]!;
-    if (score > best.score) best = { code: token.slice(2, -2), score };
-  }
-  return best.code;
+  return rankLanguages(
+    Object.entries(config.lang_to_id).map(([token, id]) => ({
+      code: token.slice(2, -2), // "<|fr|>"
+      score: data[base + id]!,
+    })),
+  );
 }
 
 /** Natural-log softmax of `scores` (one vocabulary-sized row) at `index`. */
@@ -368,36 +388,48 @@ async function decodeScored(
 /** Clips at least this long whose two decodes both fail are split in two and tried again. */
 const SPLIT_MIN_SECONDS = 8;
 
+/** A clip's text, and whether Whisper doubted its first decode (see `transcribeClipChecked`). */
+export interface ClipTranscript {
+  text: string;
+  doubtful: boolean;
+  /** Average log-probability of Whisper's likelier decode of the clip (-Infinity without one). */
+  confidence: number;
+}
+
 /**
  * Transcribes one clip in a known language, keeping Whisper's hallucinations out (see
  * `transcribeChecked`: a doubtful clip costs one more pass). A long clip that Whisper still loops
  * on or is unsure of is cut at its quietest moment near the middle and each half transcribed the
  * same way: on shorter audio Whisper Tiny often recovers the speech (and on noise both halves are
- * dropped again).
+ * dropped again). `doubtful` says the first decode was a loop, cut off or unlikely (it was decoded
+ * again), which is also what speech in another language than `language` looks like.
  */
-export async function transcribeClip(
+export async function transcribeClipChecked(
   asr: AutomaticSpeechRecognitionPipeline,
   clip: Float32Array,
   language: string,
   canSplit = true,
-): Promise<string> {
+): Promise<ClipTranscript> {
   const seconds = clip.length / 16000;
   if (clip.length > 30 * 16000) {
     // Not used by the worker (clips are cut to ≤ 28 s), so no checks beyond the clean-up.
     const out = await asr(clip, { language, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 });
     const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : out.text;
-    return cleanTranscript(text, seconds);
+    return { text: cleanTranscript(text, seconds), doubtful: false, confidence: Number.NEGATIVE_INFINITY };
   }
-  const verdict = await transcribeChecked(
-    (timestamps) => decodeScored(asr, clip, language, timestamps),
-    seconds,
-  );
+  let confidence = Number.NEGATIVE_INFINITY;
+  const verdict = await transcribeChecked(async (timestamps) => {
+    const decode = await decodeScored(asr, clip, language, timestamps);
+    confidence = Math.max(confidence, averageLogprob(decode));
+    return decode;
+  }, seconds);
+  const doubtful = verdict.retried;
   if (
     !canSplit ||
     seconds < SPLIT_MIN_SECONDS ||
     (verdict.dropped !== 'loop' && verdict.dropped !== 'low-confidence')
   ) {
-    return verdict.text;
+    return { text: verdict.text, doubtful, confidence };
   }
   // One cut between a third and two thirds of the clip, at its quietest 50 ms.
   const halves = splitLongTurns(clip, [{ speaker: 0, start: 0, end: clip.length }], {
@@ -407,5 +439,65 @@ export async function transcribeClip(
   const texts: string[] = [];
   for (const half of halves)
     texts.push(await transcribeClip(asr, clip.subarray(half.start, half.end), language, false));
-  return texts.filter(Boolean).join(' ');
+  return { text: joinTexts(texts), doubtful, confidence };
+}
+
+/** `transcribeClipChecked`'s text. */
+export async function transcribeClip(
+  asr: AutomaticSpeechRecognitionPipeline,
+  clip: Float32Array,
+  language: string,
+  canSplit = true,
+): Promise<string> {
+  return (await transcribeClipChecked(asr, clip, language, canSplit)).text;
+}
+
+/** Whisper as a Recognizer, plus what only Whisper can do: detect languages and doubt itself. */
+export interface WhisperRecognizer extends Recognizer {
+  id: WhisperId;
+  transcribeChecked(clip: Float32Array, language: string): Promise<ClipTranscript>;
+  detectLanguage(sample: Float32Array): Promise<LanguageGuess>;
+}
+
+export function isWhisperRecognizer(r: Recognizer): r is WhisperRecognizer {
+  return isWhisper(r.id);
+}
+
+/** Whisper `size` running in `asr`, as a recognizer. */
+export function whisperRecognizer(
+  size: WhisperId,
+  asr: AutomaticSpeechRecognitionPipeline,
+  dispose: () => Promise<void> = () => disposeWhisper(size),
+): WhisperRecognizer {
+  return {
+    id: size,
+    label: WHISPER_MODELS[size].label,
+    transcribe: (clip, language) => transcribeClip(asr, clip, whisperLanguage(language)),
+    transcribeChecked: (clip, language) => transcribeClipChecked(asr, clip, whisperLanguage(language)),
+    detectLanguage: (sample) => detectLanguage(asr, sample),
+    dispose,
+  };
+}
+
+/** Loads Whisper `size` (one size at a time: loading another frees this one). */
+export async function loadWhisperRecognizer(
+  size: WhisperId,
+  onProgress: ByteProgress,
+): Promise<WhisperRecognizer> {
+  return whisperRecognizer(size, await loadWhisper(size, onProgress));
+}
+
+/**
+ * Loads a speech-to-text model by id. A failure is a ModelLoadError: "download" when the files
+ * couldn't be fetched, "load" when the model couldn't be started.
+ */
+export async function loadRecognizer(id: RecognizerId, onProgress: ByteProgress): Promise<Recognizer> {
+  if (isWhisper(id)) return loadWhisperRecognizer(id, onProgress);
+  configureRuntime();
+  try {
+    return await (id === 'sensevoice' ? loadSenseVoice(onProgress) : loadOmnilingual(onProgress));
+  } catch (err) {
+    if (err instanceof ModelLoadError) throw err;
+    throw new ModelLoadError(isDownloadError(err) ? 'download' : 'load', errorMessage(err));
+  }
 }

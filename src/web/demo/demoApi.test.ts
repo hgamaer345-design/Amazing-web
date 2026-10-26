@@ -96,7 +96,8 @@ describe('demo API (in-browser transcription)', () => {
     expect(summary).toMatchObject({ title: 'Team call', status: 'queued', quality: 'high' });
 
     const job = await nextJob(1);
-    expect(job.options).toEqual({ quality: 'high', speakersExpected: 2, lite: false });
+    expect(job.options).toEqual({ quality: 'high', speakersExpected: 2, language: null, lite: false });
+    expect(summary.requestedLanguage).toBeNull();
     job.progress({ stage: 'speakers', message: 'Finding the speakers… 40%', fraction: 0.1 });
     const running = await demo.getTranscript(summary.id);
     expect(running.status).toBe('transcribing');
@@ -309,6 +310,98 @@ describe('demo API (in-browser transcription)', () => {
     } as unknown as DemoRecord);
     const [legacy] = await demo.listTranscripts();
     expect(legacy).toMatchObject({ id: 'legacy', status: 'done', quality: 'high', audioAvailable: false });
+    expect(legacy!.requestedLanguage).toBeNull();
+  });
+
+  it('passes the chosen language to the engine and keeps it on the transcript', async () => {
+    const { summary } = await upload('Entretien.wav', { language: 'fr' });
+    expect(summary.requestedLanguage).toBe('fr');
+    const job = await nextJob(1);
+    expect(job.options.language).toBe('fr');
+    job.resolve({ ...RESULT, languageCode: 'fr' });
+    expect(await settled(summary.id)).toMatchObject({ requestedLanguage: 'fr', languageCode: 'fr' });
+
+    const auto = await upload('Auto.wav', { language: 'auto' });
+    expect(auto.summary.requestedLanguage).toBeNull();
+    expect((await nextJob(2)).options.language).toBeNull();
+    const cantonese = await upload('Cantonese.wav', { language: 'yue' });
+    expect(cantonese.summary.requestedLanguage).toBe('yue');
+
+    for (const language of ['xx', 'french', 'en-US']) {
+      await expect(upload('Bad.wav', { language })).rejects.toMatchObject({
+        code: 'INVALID_INPUT',
+        status: 400,
+      });
+    }
+  });
+
+  it('gives rows their language only when speakers use different languages', async () => {
+    const mixed: SpeechResult = {
+      segments: [
+        { speaker: 'S0', startMs: 0, endMs: 4_000, text: 'Bonjour à tous.', lang: 'fr' },
+        { speaker: 'S1', startMs: 4_500, endMs: 6_000, text: 'Hello everyone.', lang: 'en' },
+        { speaker: 'S0', startMs: 6_500, endMs: 9_000, text: 'On commence.', lang: 'fr' },
+      ],
+      languageCode: 'fr',
+      durationSec: 9,
+    };
+    const one = await upload('Mixed.wav');
+    (await nextJob(1)).resolve(mixed);
+    const rows = (await settled(one.summary.id)).document!.rows;
+    expect(rows.map((r) => [r.speakerId, r.lang])).toEqual([
+      ['spk_1', 'fr'],
+      ['spk_2', 'en'],
+      ['spk_1', 'fr'],
+    ]);
+
+    const two = await upload('English.wav');
+    (await nextJob(2)).resolve({ ...RESULT, segments: RESULT.segments.map((s) => ({ ...s, lang: 'en' })) });
+    expect((await settled(two.summary.id)).document!.rows.every((r) => r.lang === undefined)).toBe(true);
+  });
+
+  it('labels each row by its own speaker even when speech overlaps', () => {
+    const rows = [
+      { id: 'a', speakerId: 'spk_1', startMs: 0, endMs: 10_000, text: 'Long French turn.' },
+      { id: 'b', speakerId: 'spk_2', startMs: 4_000, endMs: 5_000, text: 'Yes.' },
+      { id: 'c', speakerId: 'spk_1', startMs: 12_000, endMs: 14_000, text: 'Was?' },
+    ];
+    const out = demo.withRowLanguages(
+      rows,
+      [
+        { speaker: 'S0', startMs: 0, endMs: 10_000, text: 'Long French turn.', lang: 'fr' },
+        { speaker: 'S1', startMs: 4_000, endMs: 5_000, text: 'Yes.', lang: 'en' },
+        { speaker: 'S0', startMs: 12_000, endMs: 14_000, text: 'Was?', lang: 'de' },
+      ],
+      'fr',
+    );
+    expect(out.map((r) => r.lang)).toEqual(['fr', 'en', 'de']);
+  });
+
+  it('leaves time spent loading another model out of the estimate, and says nothing then', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { summary } = await upload('Two languages.wav');
+    const job = await nextJob(1);
+    job.progress({ stage: 'speakers', message: 'Finding the speakers…', fraction: 0 });
+    vi.advanceTimersByTime(30_000);
+    job.progress({ stage: 'transcribing', message: 'Transcribing…', fraction: 0.5 });
+    expect((await demo.getTranscript(summary.id)).progress.etaSeconds).toBe(30);
+    job.progress({ stage: 'loading', message: 'Detected French — downloading…', fraction: 0.5 });
+    vi.advanceTimersByTime(120_000);
+    expect((await demo.getTranscript(summary.id)).progress.etaSeconds).toBeNull();
+    // The 2 minutes of downloading don't count: 30 s for half, then 6 s for the next 10 %.
+    job.progress({ stage: 'transcribing', message: 'Transcribing…', fraction: 0.5 });
+    vi.advanceTimersByTime(6_000);
+    job.progress({ stage: 'transcribing', message: 'Transcribing…', fraction: 0.6 });
+    expect((await demo.getTranscript(summary.id)).progress.etaSeconds).toBe(24);
+    job.resolve(RESULT);
+    await settled(summary.id);
+  });
+
+  it('estimates the time left from the current stage once it has moved', () => {
+    expect(demo.estimateRemaining(10_000, 0.02, null)).toBeNull();
+    expect(demo.estimateRemaining(30_000, 0.5, { atMs: 30_000, fraction: 0.5 })).toBe(30);
+    // Transcription turned out 4× slower than speaker analysis suggested.
+    expect(demo.estimateRemaining(54_000, 0.6, { atMs: 30_000, fraction: 0.5 })).toBeCloseTo(96);
   });
 
   it('refuses recordings longer than the in-browser limit', async () => {
