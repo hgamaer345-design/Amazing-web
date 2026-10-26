@@ -327,7 +327,7 @@ fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false) + per-s
                    normalisation for WeSpeaker
 turns.ts           speaker turns → padded, merged clips; long turns cut at the quietest point; samples
                    of speech for language detection
-text.ts            clean-up of Whisper's text (sound tags, lone "you" on noise, repetition loops) and the
+text.ts            clean-up of Whisper's text (sound tags, captions, lone "you" on noise, loops) and the
                    hallucination checks (silence, loops, unlikely text, "Thank you for watching.")
 models.ts          ONNX Runtime set-up (self-hosted wasm; threads when cross-origin isolated),
                    speaker models, Whisper via Transformers.js (as a Recognizer), language detection,
@@ -439,10 +439,22 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
     kept text was cut off, is cut at its quietest moment near the middle and both halves tried (a
     cut-off text is kept if a half is cut off too or the halves give less);
   - a known hallucination phrase or credit ("Thank you.", "Thanks for watching.", "Subtitles by
-    …", HALLUCINATION_PHRASES) ending a clip is removed unless its tokens average ≥ -0.3: real
-    ones scored ≥ -0.12, invented ones ≤ -0.46. One followed by more speech is kept (a sound tag
-    such as "[Music]" is not speech). Sentences end at . ! ? and 。！？, not at a dot inside a word
-    ("Amara.org", "А.Синецкая", "3.5"); "You" counts only alone ("And you?" is kept).
+    …", HALLUCINATION_PHRASES) or a whole subscribe-and-like outro ("구독과 좋아요
+    부탁드립니다", HALLUCINATION_OUTROS; never their parts, which people say: "구독 좋아요",
+    "请订阅") ending a clip is removed unless its tokens average ≥ -0.3: real ones scored ≥
+    -0.12, invented ones ≤ -0.46. One followed by more speech is kept (a sound tag such as
+    "[Music]", or a caption, is not speech). Sentences end at . ! ? and 。！？, not at a dot inside
+    a word ("Amara.org", "А.Синецкая", "3.5"); "You" counts only alone ("And you?" is kept);
+  - sound tags go from every text: brackets and music notes; parentheses with a sound word or
+    alone at an end;
+  - so do the captions of subtitles for the deaf that Whisper writes in capitals for music and
+    noise: a sentence made only of the caption phrases it wrote in our tests ("ДИНАМИЧНАЯ
+    МУЗЫКА", "СТУК В ДВЕРЬ", "СМЕХ", "OUTRO MUSIC PLAYING"; not "ООН КРИК О ПОМОЩИ", "BBC
+    MUSIC.", "КРИКЕТ." or "1, 2, 3 ДИНАМИЧНАЯ МУЗЫКА"), and a bracket Whisper never closed with
+    the tag right after it (caption phrases, notes, whole sound words: "[♪ OUTRO MUSIC PLAYING
+    [♪" goes; "OK, let's start." after "[MUSIC PLAYING" and "USA! USA!" after "[Music" stay),
+    and a stray closing bracket. A split clip's halves are still weighed against its cut-off
+    text with their captions and outros in, as they may be all that a half of music gives.
 
   Measured per clip against a Parakeet-TDT reference on 637 Whisper Tiny clips (a real 5.5 min
   interview under five diarizations, AMI and earnings-call excerpts, the TTS conversations, real
@@ -465,6 +477,27 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   correct words there), and no clip lost a correct word. Decoder steps 12482 → 13026 (15% fewer
   than with no filter, 18% before); 808 passes instead of 791. Whisper Base on its 237 clips:
   unchanged.
+
+  A second review found the split adding text: when a cut-off clip's second half held only music
+  or noise, Whisper's caption or outro for it got in ("ДИНАМИЧНАЯ МУЗЫКА" at -0.54, "[♪ OUTRO
+  MUSIC PLAYING [♪" at -1.12, "구독과 좋아요 부탁드립니다!" at -0.91). Hence the captions, the
+  unclosed brackets and the whole outros above. A first version lost real speech: any sentence in
+  capitals with a sound-word stem was a caption, so "ООН: крик о помощи.", which Whisper Base
+  wrote in capitals, went (7 clips), as would "КРИКЕТ." or "CHEERS!"; outro parts said for real
+  went on Tiny ("구독 좋아요." at -0.55, "请订阅。" at -0.39); and halves weighed without their
+  captions lost to a clip's cut-off loop ("1," of "1, 1, 1, …"). Also tried and dropped: a
+  likelihood floor for halves (real speech in other languages scored -1.00 to -1.17 there), any
+  sentence in capitals (acronyms: "NASA NATO."), and outro or credit prefixes ("Корректор …",
+  "字幕制作…", "Copyright …", "수고하셨습니다"). In 11,134 runs on Tiny and Base (music and
+  noise in up to 12 languages; TTS and FLEURS speech in up to 19 languages followed by room tone,
+  music, dishes noise or a tap; sound words, acronyms, numbers and the outros said over or before
+  music; 107 real recordings in 19 languages at their own level, quieter and 3, 6 and 12 dB
+  down), no whole-vs-halves choice changed, no word was added and 204 texts changed, 200 only by
+  losing a caption or outro ("ДИНАМИЧНАЯ МУЗЫКА", "СТУК В ДВЕРЬ", "구독 부탁드립니다!", "[ OUTRO
+  MUSIC PLAYING ["). The other 4 are "구독 부탁드립니다." said for real, which Tiny was unsure of
+  in 4 of 8 conditions; Base kept it in all 8, and Korean goes to SenseVoice, with Whisper only
+  as its fallback. The 637 Tiny clips (6284 correct, 1088 wrong, 13026 decoder steps) and the
+  107 recordings at their own level: unchanged.
 
 - After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
   memory); model errors are reported either as download problems or as "couldn't start" (memory).

@@ -171,6 +171,54 @@ describe('transcribeClipChecked', () => {
     expect(out.text).toBe('The first half of the talk. And the second half.');
   });
 
+  it('keeps the caption Whisper writes for a half that is only music out of the text', async () => {
+    const { words, ids } = vocabulary();
+    const [go, bang, goLower] = ids(' Go', '!', ' go');
+    const counted = ids(' Раз,', ' два,', ' три.');
+    const caption = ids(' ДИНАМИЧНАЯ', ' МУЗЫКА');
+    const clip = new Float32Array(10 * 16000).fill(0.5);
+    clip.fill(0.2, 5 * 16000);
+    const script: Script = (text, heard) => {
+      if (heard.length === clip.length)
+        return text.at(-1) === go || text.at(-1) === goLower ? [bang!] : [go!, goLower!];
+      return follows(heard[0] === 0.5 ? counted : caption)(text, heard);
+    };
+    const { asr, passes } = fakeWhisper(words, script);
+    const out = await transcribeClipChecked(asr, clip, 'ru');
+    expect(passes.map((p) => p.text)).toContain(' ДИНАМИЧНАЯ МУЗЫКА');
+    expect(out.text).toBe('Раз, два, три.');
+  });
+
+  it("weighs the halves with their captions and outros, so they don't tip the choice to a loop", async () => {
+    const { words, ids } = vocabulary();
+    const [go, on, bang, goLower] = ids(' Go', ' on', '!', ' go');
+    // The clip's text is cut off at a loop: "Go on!" (6 characters).
+    const chant: Script = (text) => {
+      const last = text.at(-1);
+      if (last === go || last === goLower) return [on!];
+      return last === on ? [bang!] : [go!, goLower!];
+    };
+    const halves = [
+      [ids(' Раз.'), ids(' ДИНАМИЧНАЯ', ' МУЗЫКА')],
+      [ids(' 하나.'), ids(' 구독과', ' 좋아요', ' 부탁드립니다!')],
+    ];
+    for (const [said, music] of halves) {
+      const clip = new Float32Array(10 * 16000).fill(0.5);
+      clip.fill(0.2, 5 * 16000);
+      // Two choices at every step of the music: Whisper is unsure of the outro (-0.31).
+      const unsure: Script = (text, heard) =>
+        text.length ? follows(music!)(text, heard) : [music![0]!, END];
+      const script: Script = (text, heard) =>
+        heard.length === clip.length
+          ? chant(text, heard)
+          : (heard[0] === 0.5 ? follows(said!) : unsure)(text, heard);
+      const { asr, passes } = fakeWhisper(words, script);
+      const out = await transcribeClipChecked(asr, clip, 'ru');
+      expect(passes[0]!.text).toMatch(/^( Go on!){6}/);
+      expect(out.text).toBe(words[said![0]!]!.trim());
+    }
+  });
+
   it('keeps a cut-off text if a half is cut off too', async () => {
     const { words, ids } = vocabulary();
     const [go, bang, goLower] = ids(' Go', '!', ' go');

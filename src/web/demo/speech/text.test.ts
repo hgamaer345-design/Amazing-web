@@ -12,6 +12,7 @@ import {
   sentences,
   stripHallucinationPhrases,
   transcribeChecked,
+  withoutCaptions,
 } from './text';
 
 describe('cleanTranscript', () => {
@@ -26,6 +27,72 @@ describe('cleanTranscript', () => {
     expect(cleanTranscript('You.', 1.5)).toBe('');
     expect(cleanTranscript('You.', 4)).toBe('You.');
     expect(cleanTranscript('Thank you.', 1)).toBe('Thank you.');
+  });
+
+  it('keeps captions for `withoutCaptions`', () => {
+    expect(cleanTranscript(' Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА', 9)).toBe('Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА');
+    expect(cleanTranscript(' Po-po-po [♪ OUTRO MUSIC PLAYING [♪', 9)).toBe(
+      'Po-po-po [ OUTRO MUSIC PLAYING [',
+    );
+  });
+});
+
+describe('withoutCaptions', () => {
+  it('drops the captions Whisper wrote in capitals for music and noise', () => {
+    for (const t of [
+      'ДИНАМИЧНАЯ МУЗЫКА',
+      'ИНТРИГУЮЩАЯ МУЗЫКА.',
+      'СМЕХ',
+      'СТУК',
+      'СТУК В ДВЕРЬ ДИНАМИЧНАЯ МУЗЫКА',
+      'ВЫСТРЕЛЫ',
+      'МУЗЫКАЛЬНАЯ ЗАСТАВКА',
+      '[ OUTRO MUSIC PLAYING [',
+    ]) {
+      expect(withoutCaptions(t)).toBe('');
+    }
+    expect(withoutCaptions('Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА')).toBe('Раз, два, три.');
+    expect(withoutCaptions('4,1. ДИНАМИЧНАЯ МУЗЫКА')).toBe('4,1.');
+    expect(withoutCaptions('СМЕХ. Ну что, начнём?')).toBe('Ну что, начнём?');
+  });
+
+  it('keeps speech in capitals: only whole caption phrases are captions, and digits are speech', () => {
+    for (const t of [
+      'ООН КРИК О ПОМОЩИ', // Whisper Base's "ООН: крик о помощи."
+      'КРИКЕТ.',
+      'СИРЕНЬ.',
+      'МИХАЭЛЬ ШУМАХЕР.',
+      'CHEERS!',
+      'SILENCE!',
+      'MUSICAL THEATRE.',
+      'BBC MUSIC.',
+      'MTV MUSIC AWARDS.',
+      'NASA, NATO.',
+      'Which agencies were in the room? NASA NATO.',
+      'Какие организации там были? НАТО ЮНЕСКО',
+      'USA! USA!',
+      '1, 2, 3 ДИНАМИЧНАЯ МУЗЫКА',
+      'ПОЕХАЛИ ДИНАМИЧНАЯ МУЗЫКА',
+      'Мы слушали музыку. Стук в дверь.',
+      '我用了 HTML 和 CSS',
+    ]) {
+      expect(withoutCaptions(t)).toBe(t);
+    }
+  });
+
+  it('drops a bracket Whisper never closed with the tag right after it, not the speech', () => {
+    expect(withoutCaptions('Po-po-po [ OUTRO MUSIC PLAYING [')).toBe('Po-po-po');
+    expect(withoutCaptions('[ OUTRO MUSIC PLAYING [ OUTRO MUSIC PLAYING [ O')).toBe('');
+    expect(withoutCaptions('【')).toBe('');
+    expect(withoutCaptions('【音楽')).toBe('');
+    expect(withoutCaptions('【音楽 今日は晴れです。')).toBe('今日は晴れです。');
+    expect(withoutCaptions("[MUSIC PLAYING OK, let's start.")).toBe("OK, let's start.");
+    expect(withoutCaptions('[Music USA! USA!')).toBe('USA! USA!');
+    expect(withoutCaptions('[Music Hello.')).toBe('Hello.');
+    expect(withoutCaptions('[ Musicians are here.')).toBe('Musicians are here.');
+    expect(withoutCaptions('[Music I think so.')).toBe('I think so.');
+    expect(withoutCaptions('[I think so.')).toBe('I think so.');
+    expect(withoutCaptions('We are done.] [Music')).toBe('We are done.');
   });
 });
 
@@ -307,6 +374,57 @@ describe('stripHallucinationPhrases', () => {
     expect(isHallucinationPhrase('شكرا للمشاهدة')).toBe(true);
     expect(isHallucinationPhrase('شكراً للمشاهدة.')).toBe(true);
   });
+
+  it('knows the whole subscribe-and-like outros, not their parts or sentences that start like them', () => {
+    for (const t of [
+      '구독과 좋아요 부탁드립니다!',
+      '구독 좋아요 부탁드립니다.',
+      '구독 부탁드립니다!',
+      '请不吝点赞 订阅 转发 打赏支持明镜与点点栏目',
+      '請不吝點贊 訂閱 轉發 打賞支持明鏡與點點欄目',
+      'チャンネル登録よろしくお願いします',
+      'ご視聴頂きありがとうございました。',
+    ]) {
+      expect(isHallucinationPhrase(t)).toBe(true);
+      expect(isHallucinationPhrase(t, false)).toBe(false);
+    }
+    for (const t of [
+      '구독 좋아요.',
+      '구독, 좋아요,',
+      '구독과 좋아요',
+      '请订阅。',
+      '請訂閱',
+      '请点赞',
+      '请不吝点赞',
+      '다음 주에 또 만나요 구독 부탁드립니다',
+      '구독자가 많아요.',
+      '请订阅以后再告诉朋友。',
+      '歡迎訂閱',
+      '수고하셨습니다.',
+      '字幕制作需要三天时间。',
+      'Корректор нашёл три ошибки.',
+      'Copyright stays with the original author.',
+    ]) {
+      expect(isHallucinationPhrase(t)).toBe(false);
+    }
+  });
+
+  it('drops a doubtful outro, and a phrase that only a caption follows', () => {
+    const outro = decodeOf([...sure(' 다 왔어요.'), ' 구독과:-0.9', ' 좋아요:-0.9', ' 부탁드립니다!:-0.9']);
+    expect(stripHallucinationPhrases(outro)).toBe(' 다 왔어요.');
+    expect(stripHallucinationPhrases(outro, undefined, false)).toBe(
+      ' 다 왔어요. 구독과 좋아요 부탁드립니다!',
+    );
+    // Said for real, Whisper Tiny wrote "구독 좋아요." at -0.55.
+    const said = decodeOf([' 구독:-0.5', ' 좋아요:-0.6', '.:-0.5']);
+    expect(stripHallucinationPhrases(said)).toBe(' 구독 좋아요.');
+    const thanks = [' Спасибо:-0.9', ' за:-0.9', ' просмотр:-0.9', '.:-0.9'];
+    for (const caption of [' ДИНАМИЧНАЯ МУЗЫКА', ' [♪ OUTRO MUSIC PLAYING [♪']) {
+      const decode = decodeOf([...sure(' Всё.'), ...thanks, `${caption}:-0.5`]);
+      expect(stripHallucinationPhrases(decode)).toBe(' Всё.');
+      expect(stripHallucinationPhrases(decode, undefined, false)).toBe(decode.text);
+    }
+  });
 });
 
 describe('maxClipTokens', () => {
@@ -354,6 +472,16 @@ describe('transcribeChecked', () => {
     const v = await run(cut, cut, cut);
     expect(v.text).toBe('पिछली बार क');
     expect(v.partial).toBe(true);
+  });
+
+  it('drops captions and outros, and gives the text with them in for weighing a split', async () => {
+    const counted = decodeOf([...sure(' Раз, два, три.'), ' ДИНАМИЧНАЯ:-0.5', ' МУЗЫКА:-0.6']);
+    expect(await run(counted)).toMatchObject({
+      text: 'Раз, два, три.',
+      withCaptions: 'Раз, два, три. ДИНАМИЧНАЯ МУЗЫКА',
+    });
+    const outro = decodeOf([' 구독과:-0.9', ' 좋아요:-0.9', ' 부탁드립니다!:-0.9']);
+    expect(await run(outro)).toMatchObject({ text: '', withCaptions: '구독과 좋아요 부탁드립니다!' });
   });
 
   it('keeps the speech after a sentence said three times', async () => {
@@ -496,6 +624,10 @@ describe('cleanTranscript in other scripts', () => {
     expect(cleanTranscript('(Risas) Sí, claro.', 5)).toBe('Sí, claro.');
     expect(cleanTranscript('That was great. (door closes)', 5)).toBe('That was great.');
     expect(cleanTranscript('(speaking in foreign language)', 5)).toBe('');
+    expect(cleanTranscript('Цвела сирень (сирень) у дома.', 5)).toBe('Цвела сирень (сирень) у дома.');
+    expect(cleanTranscript('Михаэль Шумахер (Шумахер) выиграл.', 5)).toBe(
+      'Михаэль Шумахер (Шумахер) выиграл.',
+    );
   });
 
   it('adds no space where a tag sat inside Chinese or Japanese', () => {
