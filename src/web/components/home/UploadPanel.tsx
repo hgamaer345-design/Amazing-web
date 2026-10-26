@@ -234,7 +234,8 @@ export function UploadPanel() {
           )}
 
           <div className="upload-options">
-            <LanguagePicker value={language} onChange={setLanguage} demo={isDemoMode} />
+            {/* The in-browser engine takes the chosen language once per-speaker detection lands. */}
+            {!isDemoMode && <LanguagePicker value={language} onChange={setLanguage} demo={false} />}
 
             <div className="field">
               <label className="field-label" htmlFor={speakersId}>
