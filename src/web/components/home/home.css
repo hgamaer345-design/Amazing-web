@@ -318,13 +318,25 @@
 
 .upload-options {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.3fr);
   gap: var(--space-4);
+}
+@media (max-width: 860px) {
+  .upload-options {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .upload-options > :last-child {
+    grid-column: 1 / -1;
+  }
 }
 @media (max-width: 640px) {
   .upload-options {
     grid-template-columns: 1fr;
   }
+}
+.language-select {
+  width: 100%;
+  max-width: 320px;
 }
 .stepper {
   display: inline-flex;

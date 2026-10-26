@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ERROR_MESSAGES } from '../../../shared/errors';
 import { LITE_DEVICE } from '../../demo/device';
 import type { QualityMode } from '../../../shared/types';
-import { ApiError, uploadTranscript, type UploadHandle } from '../../api';
+import { ApiError, isDemoMode, uploadTranscript, type UploadHandle } from '../../api';
 import { useNow, useUsage } from '../../hooks/useUsage';
 import { decodeWaveform, readAudioDuration, type Waveform } from '../../lib/audioAnalysis';
 import { useAppConfig } from '../../lib/config';
@@ -11,8 +11,10 @@ import { validateAudioFile } from '../../lib/fileValidation';
 import { setSessionAudio } from '../../lib/sessionAudio';
 import { UploadSpeedMeter } from '../../lib/uploadSpeed';
 import ProcessingSteps from '../ProcessingSteps';
+import { languageName } from '../editor/format';
 import { Dropzone } from './Dropzone';
 import { FileCard } from './FileCard';
+import { LanguagePicker } from './LanguagePicker';
 import { QualityPicker, remainingUses } from './QualityPicker';
 
 /** Longest recording whose waveform is drawn on a phone. */
@@ -46,6 +48,8 @@ export function UploadPanel() {
   const [problem, setProblem] = useState<string | null>(null);
   const [speakers, setSpeakers] = useState<number | null>(null);
   const [keepAudio, setKeepAudio] = useState(false);
+  // null: detect it (per speaker in the demo, per file on the server).
+  const [language, setLanguage] = useState<string | null>(null);
   const [quality, setQuality] = useState<QualityMode>(config.defaultQuality);
   const [notice, setNotice] = useState<string | null>(null);
   const [upload, setUpload] = useState<UploadState | null>(null);
@@ -138,7 +142,7 @@ export function UploadPanel() {
     }
     const handle = uploadTranscript(
       selected.file,
-      { speakersExpected: speakers, keepAudio, clientDurationSec: durationSec, quality },
+      { speakersExpected: speakers, keepAudio, clientDurationSec: durationSec, quality, language },
       ({ loaded, total: t }) => {
         const { etaSeconds } = meter.sample(loaded, t, Date.now());
         setUpload({ loaded, total: t, etaSeconds });
@@ -190,6 +194,7 @@ export function UploadPanel() {
           />
           <div className="upload-progress-actions">
             <span className="badge badge-info">{modeLabel} quality</span>
+            {language && <span className="badge badge-info">{languageName(language)}</span>}
             <button type="button" className="btn btn-sm" onClick={cancel}>
               Cancel upload
             </button>
@@ -229,6 +234,8 @@ export function UploadPanel() {
           )}
 
           <div className="upload-options">
+            <LanguagePicker value={language} onChange={setLanguage} demo={isDemoMode} />
+
             <div className="field">
               <label className="field-label" htmlFor={speakersId}>
                 Number of speakers (if known)

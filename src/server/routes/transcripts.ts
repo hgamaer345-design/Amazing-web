@@ -101,6 +101,7 @@ export function transcriptsRouter(deps: AppDeps): Router {
           keepAudio: upload.keepAudio,
           audioFile: upload.fileName,
           quality: upload.quality,
+          requestedLanguage: upload.language,
           quotaKey,
           quotaDay: day,
           estimatedTotalSeconds: estimateProcessingSeconds(
@@ -127,6 +128,7 @@ export function transcriptsRouter(deps: AppDeps): Router {
       durationSec: rec.durationSec,
       provider: rec.provider,
       quality: rec.quality,
+      language: rec.requestedLanguage ?? 'auto',
     });
     worker?.kick();
     const body: CreateTranscriptResponse = { transcript: toSummary(rec) };

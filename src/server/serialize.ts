@@ -18,6 +18,7 @@ export function toSummary(rec: TranscriptRecord): TranscriptSummary {
     provider: rec.provider,
     quality: rec.quality,
     languageCode: rec.languageCode,
+    requestedLanguage: rec.requestedLanguage,
     speakersExpected: rec.speakersExpected,
     speakerCount: rec.speakerCount,
     rowCount: rec.rowCount,

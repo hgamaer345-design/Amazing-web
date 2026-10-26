@@ -145,7 +145,9 @@ function TranscriptView({ id }: { id: string }) {
     return (
       <div className="page-narrow">
         <div className="card tx-state-card">
-          <h1 className="tx-state-title">{t.title}</h1>
+          <h1 className="tx-state-title" dir="auto">
+            {t.title}
+          </h1>
           <ProcessingSteps
             stage={t.status}
             progress={t.progress}
@@ -184,7 +186,7 @@ function TranscriptView({ id }: { id: string }) {
     return (
       <div className="page-narrow">
         <div className="card tx-state-card">
-          <h1>{t.title}</h1>
+          <h1 dir="auto">{t.title}</h1>
           <div className="alert alert-error" role="alert">
             {ERROR_MESSAGES.INTERNAL}
           </div>
@@ -222,7 +224,9 @@ function TranscriptErrorCard({
   return (
     <div className="page-narrow">
       <div className="card tx-state-card tx-error-card">
-        <p className="tx-state-eyebrow">{t.title}</p>
+        <p className="tx-state-eyebrow" dir="auto">
+          {t.title}
+        </p>
         <h1>{errorHeading(t)}</h1>
         <div className="alert alert-error" role="alert">
           {t.error?.message ?? ERROR_MESSAGES.TRANSCRIPTION_FAILED}

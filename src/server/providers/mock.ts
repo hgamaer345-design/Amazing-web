@@ -66,7 +66,8 @@ export function createMockProvider(opts: { delayMs: number }): TranscriptionProv
       if (name.includes('nospeech')) return { segments: [], languageCode: null, durationSec };
       const seed = Math.round(durationSec * 1000) ^ req.sizeBytes;
       const segments = generateMockSegments(durationSec, req.speakersExpected ?? 2, seed);
-      return { segments, words: mockWords(segments), languageCode: 'en', durationSec };
+      // The conversation is always English, but report a chosen language as a real provider would.
+      return { segments, words: mockWords(segments), languageCode: req.language ?? 'en', durationSec };
     },
   };
 }

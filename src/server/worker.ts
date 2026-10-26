@@ -279,6 +279,7 @@ export function createWorker(deps: WorkerDeps): JobWorker {
           sizeBytes: rec.sizeBytes,
           speakersExpected: rec.speakersExpected,
           quality: rec.quality,
+          language: rec.requestedLanguage,
           signal: controller.signal,
           originalFilename: rec.originalFilename,
           onJobCreated: (providerJobId) => {

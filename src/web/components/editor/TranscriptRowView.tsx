@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { formatHms } from '../../../shared/time';
 import type { Speaker, TranscriptRow } from '../../../shared/types';
 import { speakerStyleVars } from '../../lib/speakerStyle';
+import { textAttributes } from './format';
 import { EditIcon, MergeDownIcon, MergeUpIcon } from './icons';
 import { RowTextEditor } from './RowTextEditor';
 import { SpeakerMenu } from './SpeakerMenu';
@@ -28,6 +29,8 @@ export interface TranscriptRowViewProps {
   isFirst: boolean;
   isLast: boolean;
   actions: RowActions;
+  /** Language of rows that don't carry their own (the transcript's languageCode). */
+  defaultLang?: string | null;
 }
 
 // Clicks on these never seek: they have their own behaviour (or the user is working in a popup).
@@ -42,12 +45,15 @@ export const TranscriptRowView = memo(function TranscriptRowView({
   isFirst,
   isLast,
   actions,
+  defaultLang = null,
 }: TranscriptRowViewProps) {
   const [editing, setEditing] = useState(false);
   const editButtonRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef(false);
   const n = index + 1;
   const start = formatHms(row.startMs);
+  // Only the text gets the language and direction: the table itself stays left to right.
+  const lang = row.lang ?? defaultLang;
 
   useEffect(() => {
     if (!editing && restoreFocusRef.current) {
@@ -118,14 +124,21 @@ export const TranscriptRowView = memo(function TranscriptRowView({
           <RowTextEditor
             initialText={row.text}
             label={`Text of row ${n}`}
+            lang={lang}
             onCommit={(text, viaKeyboard) => {
               actions.editText(row.id, text);
               stopEditing(viaKeyboard);
             }}
             onCancel={stopEditing}
           />
+        ) : row.text ? (
+          <p className="tx-text" {...textAttributes(lang)}>
+            {row.text}
+          </p>
         ) : (
-          <p className="tx-text">{row.text || <span className="tx-text-empty">No text</span>}</p>
+          <p className="tx-text">
+            <span className="tx-text-empty">No text</span>
+          </p>
         )}
       </td>
       <td className="tx-cell-actions">

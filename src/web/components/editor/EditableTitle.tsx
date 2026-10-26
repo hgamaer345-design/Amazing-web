@@ -73,7 +73,9 @@ export function EditableTitle({ title, onSave }: EditableTitleProps) {
   if (!editing) {
     return (
       <div className="tx-title-row">
-        <h1 className="tx-title">{title}</h1>
+        <h1 className="tx-title" dir="auto">
+          {title}
+        </h1>
         <button
           ref={editButtonRef}
           type="button"
@@ -98,6 +100,7 @@ export function EditableTitle({ title, onSave }: EditableTitleProps) {
         className="input tx-title-input"
         value={value}
         maxLength={MAX_TITLE_LENGTH}
+        dir="auto"
         autoFocus
         autoComplete="off"
         disabled={saving}

@@ -13,6 +13,8 @@ export interface TranscriptTableProps {
   /** Scroll the active row into view as playback moves on. */
   followAlong: boolean;
   actions: RowActions;
+  /** The transcript's language, for rows that don't carry their own. */
+  languageCode?: string | null;
 }
 
 const UNKNOWN_SPEAKER: Speaker = { id: '', name: 'Unknown speaker', colorIndex: 9 };
@@ -37,6 +39,7 @@ export function TranscriptTable({
   trackPlayback,
   followAlong,
   actions,
+  languageCode = null,
 }: TranscriptTableProps) {
   const tableRef = useRef<HTMLTableElement>(null);
   const starts = useMemo(() => rows.map((r) => r.startMs), [rows]);
@@ -142,6 +145,7 @@ export function TranscriptTable({
               isFirst={i === 0}
               isLast={i === rows.length - 1}
               actions={rowActions}
+              defaultLang={languageCode}
             />
           ))}
         </tbody>

@@ -35,6 +35,8 @@ export interface TranscriptRecord {
   /** The provider's id for the async job (e.g. AssemblyAI transcript id), used to resume polling. */
   providerJobId: string | null;
   languageCode: string | null;
+  /** Language the user chose at upload (ISO 639-1); null = detect automatically. */
+  requestedLanguage: string | null;
   speakersExpected: number | null;
   keepAudio: boolean;
   /** Stored file name inside the uploads dir; null once the audio has been deleted. */
@@ -77,6 +79,8 @@ export interface NewTranscriptInput {
   quotaKey?: string | null;
   /** UTC day the job counts against (required with quotaKey). */
   quotaDay?: string | null;
+  /** Language the user chose (ISO 639-1); omit (null) to detect it. */
+  requestedLanguage?: string | null;
 }
 
 export type SaveDocumentResult =
@@ -137,6 +141,10 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (client_key, day, mode)
   );
   `,
+  // Nullable, so rows created before languages could be chosen read as "detect automatically".
+  `
+  ALTER TABLE transcripts ADD COLUMN requested_language TEXT;
+  `,
 ];
 
 /** Opens (and migrates) the database. Pass ":memory:" for tests. */
@@ -163,9 +171,10 @@ function migrate(db: DB): void {
 // Columns for list/get queries (everything except the potentially large document body).
 const RECORD_COLUMNS = `
   id, title, original_filename, mime_type, extension, size_bytes, duration_sec, status, provider,
-  quality, quota_key, quota_day, provider_job_id, language_code, speakers_expected, keep_audio, audio_file, error_code, error_message,
-  error_detail, attempts, lease_owner, lease_expires_at, not_before, estimated_total_seconds, started_at,
-  completed_at, processing_seconds, document_version, speaker_count, row_count, created_at, updated_at`;
+  quality, quota_key, quota_day, provider_job_id, language_code, requested_language, speakers_expected,
+  keep_audio, audio_file, error_code, error_message, error_detail, attempts, lease_owner, lease_expires_at,
+  not_before, estimated_total_seconds, started_at, completed_at, processing_seconds, document_version,
+  speaker_count, row_count, created_at, updated_at`;
 
 interface Row {
   id: string;
@@ -182,6 +191,7 @@ interface Row {
   quota_day: string | null;
   provider_job_id: string | null;
   language_code: string | null;
+  requested_language: string | null;
   speakers_expected: number | null;
   keep_audio: number;
   audio_file: string | null;
@@ -219,6 +229,7 @@ function toRecord(r: Row): TranscriptRecord {
     quotaDay: r.quota_day,
     providerJobId: r.provider_job_id,
     languageCode: r.language_code,
+    requestedLanguage: r.requested_language,
     speakersExpected: r.speakers_expected,
     keepAudio: r.keep_audio === 1,
     audioFile: r.audio_file,
@@ -329,12 +340,12 @@ export class TranscriptRepository {
       .prepare(
         `INSERT INTO transcripts (
           id, title, original_filename, mime_type, extension, size_bytes, duration_sec, status, provider,
-          quality, quota_key, quota_day, speakers_expected, keep_audio, audio_file, estimated_total_seconds,
-          created_at, updated_at
+          quality, quota_key, quota_day, requested_language, speakers_expected, keep_audio, audio_file,
+          estimated_total_seconds, created_at, updated_at
         ) VALUES (
           @id, @title, @originalFilename, @mimeType, @extension, @sizeBytes, @durationSec, 'queued', @provider,
-          @quality, @quotaKey, @quotaDay, @speakersExpected, @keepAudio, @audioFile, @estimatedTotalSeconds,
-          @now, @now
+          @quality, @quotaKey, @quotaDay, @requestedLanguage, @speakersExpected, @keepAudio, @audioFile,
+          @estimatedTotalSeconds, @now, @now
         )`,
       )
       .run({
@@ -342,6 +353,7 @@ export class TranscriptRepository {
         quality: input.quality ?? 'high',
         quotaKey: input.quotaKey ?? null,
         quotaDay: input.quotaKey ? (input.quotaDay ?? null) : null,
+        requestedLanguage: input.requestedLanguage ?? null,
         keepAudio: input.keepAudio ? 1 : 0,
         now,
       });

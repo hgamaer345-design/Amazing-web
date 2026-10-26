@@ -57,7 +57,9 @@ export function SpeakerMenu({
         }}
       >
         <span className="spk-dot" aria-hidden="true" />
-        <span className="spk-chip-name">{speaker.name}</span>
+        <span className="spk-chip-name" dir="auto">
+          {speaker.name}
+        </span>
         <ChevronDownIcon />
       </button>
 
@@ -99,7 +101,9 @@ export function SpeakerMenu({
                   }}
                 >
                   <span className="spk-dot" aria-hidden="true" />
-                  <span className="menu-item-label">{s.name}</span>
+                  <span className="menu-item-label" dir="auto">
+                    {s.name}
+                  </span>
                   {current && <CheckIcon />}
                 </button>
               );

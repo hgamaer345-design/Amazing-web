@@ -1,5 +1,13 @@
+import { baseLanguage } from '../../shared/languages';
+import { joinText, joinTexts } from '../../shared/text';
 import { fileBody, providerFetch, readJson } from './http';
-import type { ProviderResult, ProviderSegment, TranscribeRequest, TranscriptionProvider } from './types';
+import {
+  ProviderError,
+  type ProviderResult,
+  type ProviderSegment,
+  type TranscribeRequest,
+  type TranscriptionProvider,
+} from './types';
 
 // API reference: https://developers.deepgram.com/reference/speech-to-text/listen-pre-recorded
 // Pre-recorded requests are synchronous: the response carries the finished transcript.
@@ -57,6 +65,11 @@ const LABEL = 'Deepgram';
 const sec = (s: number) => Math.round(s * 1000);
 const label = (speaker: number | undefined) => (speaker == null ? null : String(speaker));
 
+/** Deepgram's `language` (a BCP-47 tag) for a Whisper language code: the same, except "jw" is "jv". */
+export function deepgramLanguage(code: string | null | undefined): string | null {
+  return baseLanguage(code);
+}
+
 /** Converts a Deepgram response into provider segments (utterances, else paragraphs, else words). */
 export function mapDeepgramResponse(res: DgResponse): ProviderResult {
   const channel = res.results?.channels?.[0];
@@ -74,14 +87,14 @@ export function mapDeepgramResponse(res: DgResponse): ProviderResult {
       speaker: label(p.speaker),
       startMs: sec(p.start),
       endMs: sec(p.end),
-      text: (p.sentences ?? []).map((s) => s.text).join(' '),
+      text: joinTexts((p.sentences ?? []).map((s) => s.text)),
     }));
   } else if (alt?.words?.length) {
     for (const w of alt.words) {
       const text = w.punctuated_word ?? w.word;
       const last = segments[segments.length - 1];
       if (last && last.speaker === label(w.speaker)) {
-        last.text += ` ${text}`;
+        last.text = joinText(last.text, text);
         last.endMs = sec(w.end);
       } else {
         segments.push({ speaker: label(w.speaker), startMs: sec(w.start), endMs: sec(w.end), text });
@@ -113,27 +126,42 @@ export function createDeepgramProvider(opts: DeepgramOptions): TranscriptionProv
     supportsSpeakerCount: false,
 
     async transcribe(req: TranscribeRequest): Promise<ProviderResult> {
+      const model = req.quality === 'standard' ? opts.standardModel : opts.model;
+      const language = deepgramLanguage(req.language);
       const params = new URLSearchParams({
-        model: req.quality === 'standard' ? opts.standardModel : opts.model,
+        model,
         diarize_model: opts.diarizeModel,
-        detect_language: 'true',
+        ...(language ? { language } : { detect_language: 'true' }),
         punctuate: 'true',
         smart_format: 'true',
         utterances: 'true',
       });
-      const res = await providerFetch(
-        `${opts.baseUrl}/v1/listen?${params}`,
-        {
-          method: 'POST',
-          headers: {
-            authorization: `Token ${opts.apiKey}`,
-            'content-type': req.mimeType || 'application/octet-stream',
-          },
-          body: fileBody(req.audioPath),
-          duplex: 'half',
-        } as RequestInit,
-        { label: LABEL, apiKey: opts.apiKey, signal: req.signal },
-      );
+      let res: Response;
+      try {
+        res = await providerFetch(
+          `${opts.baseUrl}/v1/listen?${params}`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Token ${opts.apiKey}`,
+              'content-type': req.mimeType || 'application/octet-stream',
+            },
+            body: fileBody(req.audioPath),
+            duplex: 'half',
+          } as RequestInit,
+          { label: LABEL, apiKey: opts.apiKey, signal: req.signal },
+        );
+      } catch (err) {
+        // Deepgram answers 400 when the model doesn't offer the chosen language; say which pair it was.
+        if (language && err instanceof ProviderError && err.kind === 'failed' && err.status === 400) {
+          throw new ProviderError('failed', err.message, {
+            status: err.status,
+            detail: `${err.detail ?? 'Bad request'} (model "${model}", language "${language}")`,
+            cause: err,
+          });
+        }
+        throw err;
+      }
       return mapDeepgramResponse(await readJson<DgResponse>(res, { label: LABEL }));
     },
   };
