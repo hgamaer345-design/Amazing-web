@@ -18,10 +18,11 @@ process.env.VITE_DEMO_MODE = 'true';
 process.env.VITE_BASE = base.endsWith('/') ? base : `${base}/`;
 process.env.VITE_OUT_DIR = outDir;
 
-const modelsDir = fetchSpeechModels();
+const modelsDir = await fetchSpeechModels();
 await build({ configFile: path.join(root, 'vite.config.ts') });
 
-// The speaker models are served from the site itself (see src/web/demo/speech/models.ts).
+// The speaker models, SenseVoice and Omnilingual ASR are served from the site itself (see
+// scripts/fetch-speech-models.mjs).
 fs.cpSync(modelsDir, path.join(outDir, 'models'), { recursive: true });
 
 // GitHub Pages can't send the COOP/COEP headers that multi-threaded WebAssembly needs; this
@@ -80,4 +81,19 @@ fs.writeFileSync(
 fs.copyFileSync(indexFile, path.join(outDir, '404.html'));
 // Serve files as-is (no Jekyll processing).
 fs.writeFileSync(path.join(outDir, '.nojekyll'), '');
-console.log(`Demo built for base ${process.env.VITE_BASE} in ${path.relative(root, outDir)}`);
+
+// GitHub refuses pushes with files over 100 MB, and Pages sites may be at most 1 GB.
+let siteBytes = 0;
+for (const entry of fs.readdirSync(outDir, { recursive: true, withFileTypes: true })) {
+  if (!entry.isFile()) continue;
+  const file = path.join(entry.parentPath, entry.name);
+  const { size } = fs.statSync(file);
+  if (size >= 100 * 1000 * 1000)
+    throw new Error(`${path.relative(outDir, file)} is over GitHub's 100 MB limit`);
+  siteBytes += size;
+}
+if (siteBytes > 1000 * 1000 * 1000)
+  throw new Error(`The site is ${Math.round(siteBytes / 1e6)} MB, over the 1 GB limit`);
+console.log(
+  `Demo built for base ${process.env.VITE_BASE} in ${path.relative(root, outDir)} (${Math.round(siteBytes / 1e6)} MB)`,
+);
