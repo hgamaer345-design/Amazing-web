@@ -2,9 +2,14 @@ import {
   cleanTranscript,
   type ClipDecode,
   collapseRepeats,
+  deloop,
   hasLoop,
   isHallucinationPhrase,
   isLooping,
+  loopGuard,
+  maxClipTokens,
+  repeatStart,
+  sentences,
   stripHallucinationPhrases,
   transcribeChecked,
 } from './text';
@@ -38,9 +43,15 @@ describe('collapseRepeats', () => {
   });
 });
 
-/** A decode whose tokens are the given pieces ("text:logprob"), e.g. ' Thank:-0.9'. */
-function decodeOf(pieces: string[], opts: { end?: number | null; noSpeech?: number } = {}): ClipDecode {
-  const vocab = new Map<string, number>();
+/**
+ * A decode whose tokens are the given pieces ("text:logprob"), e.g. ' Thank:-0.9'. Pieces share
+ * ids by their text (so decodes made from the same `vocab` do too).
+ */
+function decodeOf(
+  pieces: string[],
+  opts: { end?: number | null; truncated?: boolean; noSpeech?: number; vocab?: Map<string, number> } = {},
+): ClipDecode {
+  const vocab = opts.vocab ?? new Map<string, number>();
   const tokens = pieces.map((p) => {
     const at = p.lastIndexOf(':');
     const text = p.slice(0, at);
@@ -51,7 +62,8 @@ function decodeOf(pieces: string[], opts: { end?: number | null; noSpeech?: numb
   return {
     text: tokens.map((t) => t.text).join(''),
     tokens,
-    endLogprob: opts.end === undefined ? -0.1 : opts.end,
+    endLogprob: opts.truncated ? null : opts.end === undefined ? -0.1 : opts.end,
+    truncated: opts.truncated ?? false,
     noSpeechProb: opts.noSpeech ?? 0.05,
     detokenize: (ids) => ids.map((id) => byId.get(id)).join(''),
   };
@@ -71,6 +83,53 @@ describe('hasLoop', () => {
     expect(hasLoop([1, 2, 1, 2, 3, 4])).toBe(false); // "I had I had had"
     expect(hasLoop(Array.from({ length: 60 }, (_, i) => i))).toBe(false);
   });
+
+  it('needs the copies after the first to cover 16 tokens', () => {
+    const copies = (run: number[], n: number) => Array<number[]>(n).fill(run).flat();
+    expect(hasLoop(copies([1, 2, 3, 4], 4))).toBe(false); // 12 tokens after the first copy
+    expect(hasLoop(copies([1, 2, 3, 4], 5))).toBe(true);
+    expect(hasLoop(copies([1, 2, 3, 4, 5, 6], 3))).toBe(false);
+    expect(hasLoop(copies([1, 2, 3, 4, 5, 6, 7, 8], 3))).toBe(true);
+  });
+});
+
+describe('loopGuard', () => {
+  const scored = (ids: number[], logprob = -0.1) => ids.map((id) => ({ id, logprob }));
+  /** Feeds the guard `ids` one step at a time; returns each step's action by the text so far. */
+  const steps = (guard: ReturnType<typeof loopGuard>, ids: number[], logprob?: number) =>
+    ids.map((_, i) => guard(scored(ids.slice(0, i + 1), logprob)));
+  const chant = Array<number[]>(9).fill([7, 8]).flat(); // " Go!" nine times: 16 tokens after the first
+
+  it('first bans only the token that would continue the loop, so Whisper can move on', () => {
+    const guard = loopGuard(440);
+    const actions = steps(guard, [...chant, 20, 21, 22, 23]);
+    expect(actions.slice(0, 17).every((a) => a === null)).toBe(true);
+    expect(actions[17]).toEqual({ ban: [7] });
+    expect(actions.slice(18)).toEqual([null, null, null, null]);
+  });
+
+  it('ends the text if Whisper keeps looping after the ban', () => {
+    const guard = loopGuard(440);
+    const actions = steps(guard, [...chant, ...Array<number[]>(9).fill([9, 8]).flat()]);
+    expect(actions[17]).toEqual({ ban: [7] });
+    expect(actions.slice(18, 34).every((a) => a === null)).toBe(true);
+    expect(actions[34]).toBe('end'); // the copies after " Go?" cover 16 tokens again
+  });
+
+  it('keeps the ban until Whisper writes text (timestamps come in between)', () => {
+    const guard = loopGuard(440);
+    steps(guard, chant);
+    expect(guard(scored(chant))).toEqual({ ban: [7] }); // the step after a timestamp: same text
+    expect(guard(scored([...chant, 30]))).toBeNull();
+  });
+
+  it('ends at once when the loop already fills half the token limit', () => {
+    expect(steps(loopGuard(36), chant).at(-1)).toBe('end');
+  });
+
+  it('ends at once when Whisper was unsure of the text so far (a loop on noise)', () => {
+    expect(steps(loopGuard(440), chant, -0.7).at(-1)).toBe('end');
+  });
 });
 
 describe('isLooping', () => {
@@ -80,6 +139,107 @@ describe('isLooping', () => {
     expect(isLooping(decodeOf([...said, ...other, ...said, ...said]))).toBe(true);
     expect(isLooping(decodeOf([...said, ...other, ...said]))).toBe(false);
     expect(isLooping(decodeOf([...sure(' Okay.'), ...sure(' Okay.'), ...sure(' Okay.')]))).toBe(false); // too short
+  });
+
+  it('not when Whisper went on to new speech after the third time, unless the text was cut off', () => {
+    const thanks = sure(' Thank you so much.');
+    const speech = [...thanks, ...thanks, ...thanks, ...sure(" It's an honour to be here tonight.")];
+    expect(isLooping(decodeOf(speech))).toBe(false);
+    expect(isLooping(decodeOf(speech, { end: null }))).toBe(true);
+    const there = sure(' Can you hear me?');
+    const phone = [
+      ...sure(' Hello?'),
+      ...there,
+      ...sure(' Hello?'),
+      ...there,
+      ...there,
+      ...sure(' Okay, I hear you.'),
+    ];
+    expect(repeatStart(decodeOf(phone).tokens)).toBe(-1);
+    expect(repeatStart(decodeOf(phone).tokens, undefined, true)).toBe(6);
+  });
+});
+
+describe('deloop', () => {
+  it('keeps one copy of a run said back to back, and the text after it', () => {
+    const no = [' No:-0.2', ',:-0.1', ...Array(10).fill([' no:-0.1', ',:-0.1']).flat()];
+    const d = decodeOf([...no, ' no:-0.1', '!:-0.1', ...sure(' I am not going back there.')]);
+    const out = deloop(d);
+    expect(out.text).toBe(' No, no! I am not going back there.');
+    expect(out.endLogprob).toBe(-0.1);
+    expect(isLooping(out)).toBe(false);
+  });
+
+  it('takes out whole copies only, so no character is cut in two', () => {
+    // " Go!" nine times, then " Go" and " Come": the last " Go" is not a whole copy.
+    const go = decodeOf([
+      ...Array(10).fill([' Go:-0.1', '!:-0.1']).flat().slice(0, -1),
+      ' Come:-0.1',
+      '.:-0.1',
+    ]);
+    expect(deloop(go).text).toBe(' Go! Go Come.');
+  });
+
+  it('cuts at the loop when what Whisper wrote after it is unlikely or no speech', () => {
+    const loop = Array(9).fill([" I'm:-0.7", ' just:-0.8', ' like,:-0.8']).flat();
+    const start = sure(' I am going to be an eagle.');
+    const invented = decodeOf([...start, ...loop, " can't:-1.9", ' believe:-1.7', ' it.:-0.4']);
+    expect(deloop(invented).text).toBe(" I am going to be an eagle. I'm just like,");
+    expect(deloop(invented).endLogprob).toBeNull();
+    const dot = decodeOf([' Oh:-1.2', ...Array(10).fill([',:-0.5', ' no:-0.5']).flat(), '.:-0.3']);
+    expect(deloop(dot).text).toBe(' Oh, no');
+  });
+
+  it('cuts a text that was cut off where its first loop starts', () => {
+    const loop = Array(9).fill([' and:-0.1', ' we:-0.1']).flat();
+    const d = decodeOf([...sure(' We left'), ...loop, ...sure(' and then it was over')], { end: null });
+    expect(deloop(d).text).toBe(' We left and we');
+  });
+
+  it('cuts at the second copy of a sentence Whisper never got out of', () => {
+    const said = sure(' It was a good day.');
+    const out = deloop(decodeOf([...sure(' We left.'), ...said, ...said, ...sure(' We left.'), ...said]));
+    expect(out.text).toBe(' We left. It was a good day.');
+    expect(out.endLogprob).toBeNull();
+  });
+});
+
+describe('sentences', () => {
+  const text = (parts: string[]) =>
+    sentences(decodeOf(parts.map((p) => `${p}:-0.1`)).tokens).map((s) => s.map((t) => t.text).join(''));
+
+  it('ends none at a dot inside a word or number', () => {
+    // As Whisper's tokenizer writes them.
+    expect(
+      text([
+        ' We',
+        ' are',
+        ' done',
+        '.',
+        ' Sub',
+        'tit',
+        'les',
+        ' by',
+        ' the',
+        ' Am',
+        'ara',
+        '.',
+        'org',
+        ' community',
+      ]),
+    ).toEqual([' We are done.', ' Subtitles by the Amara.org community']);
+    expect(text([' Редактор', ' субтитров', ' А', '.', 'Син', 'ецкая'])).toEqual([
+      ' Редактор субтитров А.Синецкая',
+    ]);
+    expect(text([' It', ' rose', ' 3', '.', '5', '%.', ' Then', ' it', ' fell', '.'])).toEqual([
+      ' It rose 3.5%.',
+      ' Then it fell.',
+    ]);
+  });
+
+  it('still ends Chinese and Japanese sentences', () => {
+    expect(text(['我们', '走', '吧', '。', '好', '的', '。'])).toEqual(['我们走吧。', '好的。']);
+    expect(text(['谢谢', '.', '好', '的'])).toEqual(['谢谢.', '好的']);
   });
 });
 
@@ -111,17 +271,116 @@ describe('stripHallucinationPhrases', () => {
     const lead = decodeOf([' Thank:-0.6', ' you:-0.3', '.:-0.2', ...sure(' I love the design.')]);
     expect(stripHallucinationPhrases(lead)).toBe(' Thank you. I love the design.');
   });
+
+  it('drops an Amara.org credit as Whisper tokenizes it', () => {
+    const credit = [' Sub', 'tit', 'les', ' by', ' the', ' Am', 'ara', '.', 'org', ' community'].map(
+      (t) => `${t}:-0.9`,
+    );
+    expect(stripHallucinationPhrases(decodeOf([...sure(' We are done.'), ...credit]))).toBe(' We are done.');
+    expect(stripHallucinationPhrases(decodeOf(credit))).toBe('');
+    const ru = [' Редактор', ' субтитров', ' А', '.', 'Син', 'ецкая'].map((t) => `${t}:-0.9`);
+    expect(stripHallucinationPhrases(decodeOf([...sure(' Всё.'), ...ru]))).toBe(' Всё.');
+  });
+
+  it('looks past a sound tag after the phrase', () => {
+    const outro = [' Thanks:-0.9', ' for:-0.9', ' watching:-0.9', '!:-0.9'];
+    for (const tag of [' ♪', ' [Music]', ' (upbeat music)']) {
+      expect(stripHallucinationPhrases(decodeOf([...sure(' We are done.'), ...outro, `${tag}:-0.5`]))).toBe(
+        ' We are done.',
+      );
+    }
+    expect(stripHallucinationPhrases(decodeOf([...sure(' We are done.'), ' [Music]:-0.5']))).toBe(
+      ' We are done. [Music]',
+    );
+  });
+
+  it('keeps "And you?": only a lone "you" is the hallucination', () => {
+    expect(isHallucinationPhrase(' And you?')).toBe(false);
+    expect(isHallucinationPhrase(' Okay, and you?')).toBe(false);
+    expect(isHallucinationPhrase(' You.')).toBe(true);
+    const asked = decodeOf([...sure(" I'm fine, thanks."), ' And:-0.2', ' you:-0.1', '?:-0.8']);
+    expect(stripHallucinationPhrases(asked)).toBe(" I'm fine, thanks. And you?");
+  });
+
+  it('knows the Korean outro without its space and the Arabic one', () => {
+    expect(isHallucinationPhrase('시청해주셔서 감사합니다.')).toBe(true);
+    expect(isHallucinationPhrase('شكرا للمشاهدة')).toBe(true);
+    expect(isHallucinationPhrase('شكراً للمشاهدة.')).toBe(true);
+  });
+});
+
+describe('maxClipTokens', () => {
+  it('is tight in compact scripts and generous in scripts that take several tokens per character', () => {
+    expect(maxClipTokens(3, 'en')).toBe(68);
+    expect(maxClipTokens(3, 'ru')).toBe(68);
+    expect(maxClipTokens(3, 'zh')).toBe(68);
+    expect(maxClipTokens(3, 'hi')).toBe(164);
+    expect(maxClipTokens(15.19, 'hi')).toBe(440); // the fast Hindi clip that needed 308 tokens
+    expect(maxClipTokens(28, 'en')).toBe(440);
+  });
 });
 
 describe('transcribeChecked', () => {
-  const run = async (first: ClipDecode, second?: ClipDecode) => {
+  const run = async (first: ClipDecode, second?: ClipDecode, whole?: ClipDecode) => {
     const calls: boolean[] = [];
-    const verdict = await transcribeChecked(async (timestamps) => {
+    const verdict = await transcribeChecked(async (timestamps, wholeBudget) => {
       calls.push(timestamps);
+      if (wholeBudget && !timestamps) return whole!;
       return timestamps ? second! : first;
     }, 3);
     return { ...verdict, calls };
   };
+
+  it('decodes a text the token limit cut off again with the whole budget, not with timestamps', async () => {
+    const calls: [boolean, boolean][] = [];
+    const words = sure(' पिछली बार कुछ गलतियाँ रह गई थीं, इस बार ध्यान से देखना।');
+    const v = await transcribeChecked(async (timestamps, wholeBudget) => {
+      calls.push([timestamps, wholeBudget]);
+      return wholeBudget ? decodeOf(words) : decodeOf(words.slice(0, 4), { truncated: true });
+    }, 15);
+    expect(calls).toEqual([
+      [false, false],
+      [false, true],
+    ]);
+    expect(v).toMatchObject({
+      text: 'पिछली बार कुछ गलतियाँ रह गई थीं, इस बार ध्यान से देखना।',
+      partial: false,
+    });
+  });
+
+  it('never keeps a character the cut split', async () => {
+    const vocab = new Map<string, number>();
+    const cut = decodeOf([' पिछली:-0.1', ' बार:-0.1', ' क:-0.1', '�:-0.1'], { truncated: true, vocab });
+    const v = await run(cut, cut, cut);
+    expect(v.text).toBe('पिछली बार क');
+    expect(v.partial).toBe(true);
+  });
+
+  it('keeps the speech after a sentence said three times', async () => {
+    const thanks = sure(' Thank you so much.');
+    const speech = decodeOf([
+      ...thanks,
+      ...thanks,
+      ...thanks,
+      ...sure(" It's an honour to be here tonight."),
+    ]);
+    expect(await run(speech)).toMatchObject({
+      text: "Thank you so much. Thank you so much. Thank you so much. It's an honour to be here tonight.",
+      retried: false,
+    });
+  });
+
+  it('keeps the speech after a repetition Whisper got out of', async () => {
+    // As decodeScored leaves it after the loop guard's ban: the chant in full, then the rest.
+    const go = decodeOf([
+      ' Go:-0.3',
+      '!:-0.2',
+      ...Array(9).fill([' Go:-0.1', '!:-0.1']).flat(),
+      ...sure(' Come on, run.'),
+    ]);
+    const v = await run(go, go);
+    expect(v).toMatchObject({ text: 'Go! Come on, run.', retried: true, partial: false });
+  });
 
   it('keeps a confident decode without a second pass', async () => {
     const v = await run(decodeOf(sure(' We tested it on Monday.')));

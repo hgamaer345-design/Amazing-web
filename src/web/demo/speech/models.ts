@@ -16,7 +16,15 @@ import { stripOutputs, UNUSED_WHISPER_OUTPUT } from './onnxOutputs';
 import type { Recognizer, RecognizerId } from './recognizer';
 import { isWhisper, rankLanguages, whisperLanguage, type LanguageGuess, type WhisperId } from './routing';
 import { loadSenseVoice, SENSEVOICE_MB } from './sensevoice';
-import { averageLogprob, cleanTranscript, hasLoop, transcribeChecked, type ClipDecode } from './text';
+import {
+  averageLogprob,
+  cleanTranscript,
+  loopGuard,
+  maxClipTokens,
+  transcribeChecked,
+  WHISPER_MAX_NEW_TOKENS,
+  type ClipDecode,
+} from './text';
 import { splitLongTurns } from './turns';
 
 /** Whisper models (multilingual; 8-bit quantized for WebAssembly). */
@@ -286,29 +294,22 @@ function logSoftmaxAt(scores: Float32Array, index: number): number {
   return scores[index]! - max - Math.log(sum);
 }
 
-/**
- * Most tokens Whisper may write for a clip: about three times the fastest speech we measured (and
- * room for scripts that take several tokens per character), so a repetition loop stops early
- * instead of running to Whisper's 448-token limit (on Tiny, ~20 s for one 13 s clip).
- */
-export function maxClipTokens(seconds: number): number {
-  return Math.min(440, 20 + Math.ceil(16 * seconds));
-}
-
 type WhisperModel = {
   generation_config: { eos_token_id: number; no_timestamps_token_id: number };
   forward(inputs: unknown): Promise<{ logits: Tensor }>;
 };
 
 /**
- * One greedy Whisper pass over a clip that also records, at no extra model cost, the
- * log-probability of every token Whisper chose and its no-speech probability.
+ * One greedy Whisper pass over a clip, writing at most `maxTokens` tokens, that also records, at
+ * no extra model cost, the log-probability of every token Whisper chose and its no-speech
+ * probability.
  */
 async function decodeScored(
   asr: AutomaticSpeechRecognitionPipeline,
   clip: Float32Array,
   language: string,
   timestamps: boolean,
+  maxTokens: number,
 ): Promise<ClipDecode> {
   const model = asr.model as unknown as WhisperModel;
   const { eos_token_id: endId, no_timestamps_token_id: noTimestampsId } = model.generation_config;
@@ -321,18 +322,24 @@ async function decodeScored(
     if (pending) chosen.push({ id, logprob: logSoftmaxAt(pending, id) });
     pending = null;
   };
-  // A loop is ended as soon as it shows (by making <|endoftext|> the only choice) rather than
-  // left to run to the token limit; Transformers.js ignores custom stopping criteria for Whisper.
-  let looping = false;
+  // Loops are steered out of, or ended (by making <|endoftext|> the only choice), as they show
+  // rather than left to run to the token limit; Transformers.js ignores custom stopping criteria
+  // for Whisper.
+  const guard = loopGuard(maxTokens);
+  let ended = false;
   const observe = (inputIds: bigint[][], logits: Tensor) => {
     const ids = inputIds[0]!;
     settle(Number(ids.at(-1)));
+    if (ended) return logits;
     const scores = logits.data as Float32Array;
-    if (!looping && hasLoop(ids.map(Number).filter((id) => id < endId))) {
-      looping = true;
+    // The text tokens so far, each scored by now (settled above).
+    const action = guard(chosen.filter((t) => t.id < endId));
+    if (action === 'end') {
+      ended = true;
       scores.fill(Number.NEGATIVE_INFINITY);
       scores[endId] = 0;
-    } else if (!looping) {
+    } else {
+      for (const id of action?.ban ?? []) scores[id] = Number.NEGATIVE_INFINITY;
       pending = scores;
     }
     return logits;
@@ -357,14 +364,14 @@ async function decodeScored(
       task: 'transcribe',
       return_timestamps: timestamps,
       // Also keeps timestamp mode to one pass over the clip (no seek into the padding).
-      max_new_tokens: maxClipTokens(clip.length / 16000),
+      max_new_tokens: maxTokens,
       logits_processor: [observe],
     } as unknown as Parameters<AutomaticSpeechRecognitionPipeline>[1]);
     text = (Array.isArray(out) ? out[0]! : out).text;
   } finally {
     model.forward = forward;
   }
-  if (pending && !looping) {
+  if (pending && !ended) {
     // The last step: greedy decoding took the best-scoring token.
     const last: Float32Array = pending;
     let best = 0;
@@ -379,13 +386,17 @@ async function decodeScored(
     tokens: (end >= 0 ? chosen.slice(0, end) : chosen)
       .filter((t) => t.id < endId)
       .map((t) => ({ ...t, text: tokenizer.decode([t.id]) })),
-    endLogprob: end >= 0 && !looping ? chosen[end]!.logprob : null,
+    endLogprob: end >= 0 && !ended ? chosen[end]!.logprob : null,
+    truncated: end < 0 && !ended,
     noSpeechProb: Number.isNaN(noSpeechProb) ? 0 : noSpeechProb,
     detokenize: (ids) => (ids.length ? tokenizer.decode(ids, { skip_special_tokens: true }) : ''),
   };
 }
 
-/** Clips at least this long whose two decodes both fail are split in two and tried again. */
+/**
+ * Clips at least this long whose decodes both fail, or whose text is only the start of the clip's
+ * (see `ClipVerdict.partial`), are split in two and tried again.
+ */
 const SPLIT_MIN_SECONDS = 8;
 
 /** A clip's text, and whether Whisper doubted its first decode (see `transcribeClipChecked`). */
@@ -398,11 +409,12 @@ export interface ClipTranscript {
 
 /**
  * Transcribes one clip in a known language, keeping Whisper's hallucinations out (see
- * `transcribeChecked`: a doubtful clip costs one more pass). A long clip that Whisper still loops
- * on or is unsure of is cut at its quietest moment near the middle and each half transcribed the
- * same way: on shorter audio Whisper Tiny often recovers the speech (and on noise both halves are
- * dropped again). `doubtful` says the first decode was a loop, cut off or unlikely (it was decoded
- * again), which is also what speech in another language than `language` looks like.
+ * `transcribeChecked`: a doubtful clip is decoded once or twice more). A long clip that Whisper
+ * still loops on or is unsure of, or whose text was cut off, is cut at its quietest moment near
+ * the middle and each half transcribed the same way (but not split again), so a clip can take
+ * several passes: on shorter audio Whisper Tiny often recovers the speech (and on noise both
+ * halves are dropped again). `doubtful` says the first decode was a loop, cut off or unlikely (it
+ * was decoded again), which is also what speech in another language than `language` looks like.
  */
 export async function transcribeClipChecked(
   asr: AutomaticSpeechRecognitionPipeline,
@@ -410,36 +422,49 @@ export async function transcribeClipChecked(
   language: string,
   canSplit = true,
 ): Promise<ClipTranscript> {
+  const { text, doubtful, confidence } = await transcribeClipPartly(asr, clip, language, canSplit);
+  return { text, doubtful, confidence };
+}
+
+/** `transcribeClipChecked`, and whether the text is only the start of the clip's speech. */
+async function transcribeClipPartly(
+  asr: AutomaticSpeechRecognitionPipeline,
+  clip: Float32Array,
+  language: string,
+  canSplit: boolean,
+): Promise<ClipTranscript & { partial: boolean }> {
   const seconds = clip.length / 16000;
   if (clip.length > 30 * 16000) {
     // Not used by the worker (clips are cut to ≤ 28 s), so no checks beyond the clean-up.
     const out = await asr(clip, { language, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 });
     const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : out.text;
-    return { text: cleanTranscript(text, seconds), doubtful: false, confidence: Number.NEGATIVE_INFINITY };
+    const confidence = Number.NEGATIVE_INFINITY;
+    return { text: cleanTranscript(text, seconds), doubtful: false, confidence, partial: false };
   }
   let confidence = Number.NEGATIVE_INFINITY;
-  const verdict = await transcribeChecked(async (timestamps) => {
-    const decode = await decodeScored(asr, clip, language, timestamps);
+  const verdict = await transcribeChecked(async (timestamps, wholeBudget) => {
+    const maxTokens = wholeBudget ? WHISPER_MAX_NEW_TOKENS : maxClipTokens(seconds, language);
+    const decode = await decodeScored(asr, clip, language, timestamps, maxTokens);
     confidence = Math.max(confidence, averageLogprob(decode));
     return decode;
   }, seconds);
   const doubtful = verdict.retried;
-  if (
-    !canSplit ||
-    seconds < SPLIT_MIN_SECONDS ||
-    (verdict.dropped !== 'loop' && verdict.dropped !== 'low-confidence')
-  ) {
-    return { text: verdict.text, doubtful, confidence };
-  }
+  const kept = { text: verdict.text, doubtful, confidence, partial: verdict.partial };
+  const failed = verdict.dropped === 'loop' || verdict.dropped === 'low-confidence';
+  if (!canSplit || seconds < SPLIT_MIN_SECONDS || !(failed || verdict.partial)) return kept;
   // One cut between a third and two thirds of the clip, at its quietest 50 ms.
   const halves = splitLongTurns(clip, [{ speaker: 0, start: 0, end: clip.length }], {
     maxSeconds: (seconds * 2) / 3,
     searchSeconds: seconds / 3,
   });
-  const texts: string[] = [];
-  for (const half of halves)
-    texts.push(await transcribeClip(asr, clip.subarray(half.start, half.end), language, false));
-  return { text: joinTexts(texts), doubtful, confidence };
+  const parts = [];
+  for (const half of halves) {
+    parts.push(await transcribeClipPartly(asr, clip.subarray(half.start, half.end), language, false));
+  }
+  const text = joinTexts(parts.map((p) => p.text));
+  // A cut-off text is kept if splitting didn't help: a half was cut off too, or they give less.
+  if (verdict.partial && (parts.some((p) => p.partial) || text.length < verdict.text.length)) return kept;
+  return { text, doubtful, confidence, partial: parts.some((p) => p.partial) };
 }
 
 /** `transcribeClipChecked`'s text. */
