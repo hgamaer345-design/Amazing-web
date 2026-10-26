@@ -22,9 +22,9 @@ import { planTurns, speechSample, splitLongTurns } from './turns';
 const SAMPLE_RATE = 16000;
 /**
  * Share of the job (after loading the models) taken by speaker analysis, which costs the same in
- * every mode while Whisper's cost grows with its size; measured on a 5.5-minute conversation.
+ * every mode while Whisper's cost grows with its size; measured on a 5.5-minute interview.
  */
-const SPEAKERS_SHARE: Record<QualityMode, number> = { standard: 0.3, high: 0.2, ultra: 0.1 };
+const SPEAKERS_SHARE: Record<QualityMode, number> = { standard: 0.45, high: 0.3, ultra: 0.15 };
 
 /**
  * WebAssembly heap limit on phones (ONNX Runtime declares 4 GiB, which iOS can't back). Standard
