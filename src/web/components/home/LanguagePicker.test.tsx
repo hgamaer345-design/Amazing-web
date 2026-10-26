@@ -56,7 +56,7 @@ describe('LanguagePicker', () => {
     expect(select).toHaveAccessibleDescription(/Detected for each speaker\..*larger speech model/);
     rerender(<LanguagePicker value="ja" onChange={() => {}} demo />);
     expect(select).toHaveAccessibleDescription(/may download a larger speech model/);
-    rerender(<LanguagePicker value="es" onChange={() => {}} demo />);
+    rerender(<LanguagePicker value="en" onChange={() => {}} demo />);
     expect(select).toHaveAccessibleDescription('Every speaker is transcribed in this language.');
     rerender(<LanguagePicker value={null} onChange={() => {}} demo={false} />);
     expect(select).toHaveAccessibleDescription('Choose one if automatic detection gets it wrong.');

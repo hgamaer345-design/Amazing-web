@@ -39,6 +39,12 @@ jobs:
           # transformers.js pulls in onnxruntime-node, whose install would fetch ~240 MB of unused CUDA libraries.
           ONNXRUNTIME_NODE_INSTALL: skip
 
+      # The speech models (~600 MB, checksum-pinned) only change with the fetch script.
+      - uses: actions/cache@v4
+        with:
+          path: vendor/speech-models
+          key: speech-models-${{ hashFiles('scripts/fetch-speech-models.mjs') }}
+
       - name: Build the demo
         run: npm run build:pages
 

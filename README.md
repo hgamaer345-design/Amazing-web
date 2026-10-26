@@ -91,7 +91,8 @@ limit is tracked in your browser, and the modes pick the in-browser models inste
 
 - **Detect automatically** is the default. The full app has the provider detect the recording's
   language; the demo detects it **for each speaker**, so a conversation in two languages comes out
-  right.
+  right (and, when speakers use different languages, it also checks each turn, in case one person
+  switches or two voices were mistaken for one).
 - **Or choose the language** under **Language** before uploading (Whisper's 99 languages, most
   common first). Every speaker is then transcribed in that language, which helps when detection
   gets it wrong (short, noisy or accented recordings). The full app passes it to the provider:
@@ -101,17 +102,20 @@ limit is tracked in your browser, and the modes pick the in-browser models inste
   history shows each recording's language. Right-to-left text (Arabic, Hebrew, Persian, Urdu…) is
   displayed right to left, and Chinese and Japanese text is joined without spaces.
 - **In the demo, other languages download another model the first time** (then cached). English
-  and Spanish use the quality mode's Whisper model; Whisper's smaller models are much weaker in
-  other languages, so those get a larger or specialised model:
+  uses the quality mode's Whisper model; Whisper's smaller models are much weaker in other
+  languages, so those get a larger or specialised one (at least the quality mode's):
 
-  | Language                             | Speech model                                                                                           |
-  | ------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-  | English, Spanish                     | The quality mode's Whisper (Tiny ~40 MB, Base ~80 MB or Small ~250 MB)                                 |
-  | Chinese, Cantonese, Japanese, Korean | SenseVoice-Small (~240 MB)                                                                             |
-  | Other languages                      | A larger Whisper, or Omnilingual ASR (~365 MB, 1,600+ languages, no punctuation) where Whisper is poor |
+  | Language                                                                                   | Speech model                                                            |
+  | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+  | English                                                                                    | The quality mode's Whisper (Tiny ~40 MB, Base ~80 MB, Small ~250 MB)    |
+  | Spanish, Portuguese, German, Italian                                                       | Whisper Base (~80 MB)                                                   |
+  | French, Russian, Turkish, Polish, Dutch, Ukrainian, Vietnamese, Urdu, Hebrew, …            | Whisper Small (~250 MB)                                                 |
+  | Chinese, Cantonese, Japanese, Korean                                                       | SenseVoice-Small (~230 MB)                                              |
+  | Arabic, Hindi, Persian, Tamil, Swahili, Bengali and other languages Whisper handles poorly | Omnilingual ASR (~350 MB, 1,600+ languages; no punctuation or capitals) |
 
-  These models are large: on phones a recording in another language takes longer to start and is
-  more likely to run out of memory, so use a computer for long recordings in other languages.
+  These models are large. Phones use Whisper Base at most (Omnilingual ASR takes over where Base is
+  poor), and a recording in several languages can need several models, which may be more than a
+  phone's browser allows: use a computer for long recordings in other languages.
 
 ## Choosing a provider
 
@@ -239,7 +243,10 @@ Building and publishing:
 **Model credits.** pyannote segmentation-3.0 (Copyright (c) 2022 CNRS, MIT License); WeSpeaker
 ResNet34-LM speaker embeddings by the WeSpeaker project, trained on VoxCeleb, used under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); ONNX exports of both by sherpa-onnx
-(Apache-2.0); Whisper by OpenAI (MIT), ONNX conversions by Xenova on the Hugging Face hub. The site
+(Apache-2.0); Whisper by OpenAI (MIT), ONNX conversions by Xenova on the Hugging Face hub;
+SenseVoiceSmall by FunAudioLLM (Alibaba Tongyi Lab), used under the
+[FunASR Model Open Source License v1.1](https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE);
+Omnilingual ASR 300M CTC by Meta (Apache-2.0); int8 ONNX exports of both by sherpa-onnx. The site
 ships the speaker models' notices in `models/ATTRIBUTION.txt` and the licences of the bundled
 libraries (Transformers.js, ONNX Runtime Web, coi-serviceworker) in `THIRD-PARTY-LICENSES.txt`.
 

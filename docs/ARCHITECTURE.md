@@ -489,6 +489,14 @@ time a language needs them (Cache API / the hub's cache afterwards).
   constructed conversations forced to one wrong language, 7 of 13 wrong-language turns came out
   doubtful and all 7 were switched to the right language (Base: fr, zh, ar; Small: pl); Russian
   read as Ukrainian, Spanish as English and one French turn were transcribed confidently and stayed.
+- **Each turn in multilingual recordings**: when the speakers' languages differ (or one is detected
+  with p < 0.9), every turn of 1.5 s or more gets its own detection before transcription (one
+  encoder pass each; single-language recordings skip this), and a turn of 8 s or more is heard in
+  two parts (its first and last 40 %): if both are sure (p ≥ 0.8) of different languages it is cut
+  at the quietest 50 ms of its middle third into two turns. Speaker separation can join two people
+  (in a constructed four-language conversation it gave a Chinese and an Arabic speaker one label
+  and one turn); without this their Chinese went to the Arabic model. In the browser that
+  conversation went from 18.2 % to 11.7 % WER, every turn in the right language and script.
 - **Routing** (`routing.ts` `chooseRecognizer(language, quality, lite)`, from Whisper's FLEURS error
   rates, `FLEURS_WER`): Chinese, Cantonese (only as a chosen language: these Whisper sizes have no
   Cantonese token, `whisperLanguage` maps it to Chinese), Japanese and Korean → SenseVoice; English →
@@ -497,15 +505,15 @@ time a language needs them (Cache API / the hub's cache afterwards).
   away from English), at least the quality mode's; where even the largest Whisper the device runs
   stays above 30 % (or FLEURS has no figure, e.g. Basque, Albanian, Latin) → Omnilingual ASR, else
   that Whisper. On a computer: es/pt/de/it → Base; fr, ru, tr, pl, nl, uk, id, ca, ms and the
-  20–30 % ones (sv, vi, th, fi, no, tl, ro) → Small; ar, hi, fa, he, cs, el, ta, ur, sw, bn, hu, da,
-  gl, … → Omnilingual.
+  20–30 % ones (sv, vi, th, fi, no, tl, ro) → Small; ar, hi, fa, cs, el, ta, sw, bn, hu, da, gl, … →
+  Omnilingual; Urdu and Hebrew stay on Small (`WHISPER_SMALL_PREFERRED`: on FLEURS clips Small was
+  as good or better there, 43 vs 48 % and 45 vs 45 % WER, and keeps punctuation).
 - **Phones** (`lite`): Whisper is capped at Base (`LITE_MAX_WHISPER`: Base needs about 450 MB of
   WebAssembly memory; Small, with three times the weights and twice the layers, would not fit the
   768 MB heap cap, and iOS kills the tab at ~1–1.5 GB), so Ultra High uses Base there and languages
   where Base exceeds 30 % (pl, nl, id, uk, sv, …) go to Omnilingual. SenseVoice and Omnilingual are
   allowed on phones (one encoder pass, no decoder cache) behind one switch, `LITE_USES_CTC_MODELS`.
-- **Fallbacks**: a model that can't be loaded (download or start-up error; the SenseVoice and
-  Omnilingual placeholders throw until they are implemented) is replaced by the largest Whisper the
+- **Fallbacks**: a model that can't be loaded (download or start-up error) is replaced by the largest Whisper the
   device runs, then by the quality mode's Whisper; its turns join that model's group, and the
   failure is remembered for the rest of the job. Only when the quality mode's Whisper fails is the
   job an error (MODEL_DOWNLOAD / MODEL_LOAD as before).
@@ -533,8 +541,7 @@ time a language needs them (Cache API / the hub's cache afterwards).
   `lang` only when the transcript has more than one language, and then every row has one (the
   language of most of that speaker's speech in the row, `withRowLanguages`): absent means the
   transcript's `languageCode`, so single-language documents, and all older ones, stay exactly as
-  before. buildDocument still merges a speaker's consecutive turns into one row even when their
-  languages differ (the row takes the main one).
+  before. buildDocument starts a new row where a speaker's language changes.
 
 Measured in onnxruntime-node with the worker's own code (`transcribeTurns`, `models.ts`; one thread)
 on 80 recordings, 21 min: a 19-language set (FLEURS and other public samples; two constructed
@@ -569,9 +576,73 @@ of music had been transcribed as English), Ukrainian 47 → 24, Vietnamese 49 �
 7.4 CER. The price is compute for non-English speech: on this mostly non-English set the
 estimated model time (speech seconds × each model's speed) is 2.7× Standard's before (2.1× with
 the CTC models), 1.7× High's (1.4×) and the same for Ultra High (0.83×); English costs the same.
-Not measured: the browser itself (download sizes, memory with several models on a phone), and the
-real SenseVoice/Omnilingual implementations. The French news reference is itself model-made, and
-Chinese CER counts traditional-for-simplified characters as errors.
+The French news reference is itself model-made, and Chinese CER counts traditional-for-simplified
+characters as errors.
+
+In the browser (headless Chromium, built site; the four-language conversation, 56 s): on a
+computer (High, 4 threads) 92 s including first downloads of Whisper Base, Omnilingual (349 MB) and
+SenseVoice (229 MB); as an iPhone (Standard, phone settings) 146 s, with the page's process peaking
+at 1.23 GB — three extra models in one job is the worst case, near what iOS allows a tab
+(~1–1.5 GB), so long recordings in several languages are better done on a computer.
+
+### Other speech-to-text models (SenseVoice, Omnilingual ASR)
+
+```
+recognizer.ts      the Recognizer contract (Whisper, SenseVoice or Omnilingual ASR per language)
+sensevoice.ts      SenseVoice-Small int8 (zh, yue, ja, ko): FunASR fbank (fbank.ts SENSEVOICE_FBANK:
+                   hamming, snip_edges, up to 8 kHz), LFR 7/6, CMVN and prompt ids from the model's
+                   ONNX metadata, one CTC pass; recognize() also returns the language tag it heard
+omnilingual.ts     Omnilingual ASR 300M CTC int8 (1,600+ languages): normalised waveform, CTC; no
+                   punctuation or capitals (first letter capitalised)
+ctc.ts             token tables, greedy CTC (optionally restricted to a script), ONNX metadata reader,
+                   fetchCtcModel (manifest -> graph + weight parts + tokens)
+download.ts        Cache API downloads; manifests; files checked by size and SHA-256 before caching
+```
+
+- **Hosting.** `scripts/fetch-speech-models.mjs` downloads sherpa-onnx's release tarballs
+  (`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`,
+  `sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12`) and checks the tarballs and
+  the extracted model and token files against pinned SHA-256s. It then rewrites each model as its
+  graph plus its weights as ONNX external data in parts of at most 45 MB (GitHub refuses files over
+  100 MB), each named by its checksum and listed in `manifest.json`. The rewrite is verified byte
+  for byte; transcripts are identical. `build-pages.mjs` fails on a file over 100 MB or a site over
+  1 GB (it is 690 MB). With the files already in vendor/, a build only re-hashes them (~8 s);
+  downloading and unpacking both tarballs took ~4 min here.
+- **Why external data.** ONNX Runtime Web copies a model given as one buffer into its WebAssembly
+  heap and parses it there, so the heap needed about 2.5× the model: SenseVoice 590 MB after
+  loading, Omnilingual 807 MB. With external data each weight is copied once into its final place:
+  298 MB and 429 MB. The downloaded parts stay in JavaScript until the session exists, so the tab
+  briefly holds about twice the model.
+- **Memory while running** (headless Chromium, one thread, heap capped at 768 MB like a phone):
+  - SenseVoice: 358 MB after a 30 s clip.
+  - Omnilingual: its working memory grows ~10–15 MB per second of audio (the convolutional front
+    end runs at 16 kHz). The heap reached 742 MB after a whole 30 s clip and 515 MB with 12 s
+    pieces, so phones pass `maxSeconds: OMNILINGUAL_LITE_MAX_SECONDS` (12 s, cut at the quietest
+    moment). On FLEURS, cutting cost 0–7 WER points.
+  - Renderer peak: 785 MB (SenseVoice) and 880–1,100 MB (Omnilingual).
+  - Real-time factor, one thread: ~1.0 (SenseVoice) and ~2.8 (Omnilingual) on a heavily loaded
+    4-core machine. Whisper Small was 2.5 on the same machine with onnxruntime-node.
+- **Accuracy** (FLEURS dev, 6 clips per language, same clips through Whisper Small q8 with the
+  language given):
+  - SenseVoice CER: zh 14.8% vs 20.1%, ja 4.1 vs 7.8, ko 6.2 vs 8.5, yue 4.3 vs 19.1 (Whisper
+    Small has no Cantonese; run as zh). With auto-detection its language tag was right on 24 of 24.
+  - Omnilingual WER: ar 33% vs 43%, hi 31 vs 82, fa 17 vs 52, ta 48 vs 87, sw 19 vs 80, bn 26 vs
+    120, he 45 vs 45 (CER 14 vs 20), ur 48 vs 43.
+- **Hindi and Urdu scripts.** Omnilingual isn't told the language, and Hindi and Urdu (one spoken
+  language) came out in each other's script (Urdu in Devanagari in 3 of 6 clips). A text mostly in
+  the sister script is decoded again from the same scores, each wrong-script letter replaced by the
+  best letter of the right script. Urdu WER went 78% → 48% (CER 74% → 18%) and Hindi 36% → 31%.
+  Text in any other script is kept as written: it means the turn's language label is wrong, and
+  forcing letters turned Chinese speech labelled Arabic into nonsense.
+- **Noise and silence.** SenseVoice writes only "。" (dropped); Omnilingual writes nothing or a
+  lone letter (dropped). Of 16 noise and silence clips, only "啊啊" on two cat-meow clips
+  remained.
+- **SenseVoice text.** Its number formatting puts spaces around digits in Japanese ("1 日に"), so
+  spaces next to Han or kana are removed. It writes Simplified characters, also for Cantonese.
+- **Fixture.** `fbank-sensevoice.json` comes from kaldi-native-fbank with `dither=0,
+  snip_edges=True, window_type="hamming", num_bins=80, low_freq=20, high_freq=0` on the samples of
+  `fbank.json` × 32768, rounded to 4 decimals. The LFR test vectors are sherpa-onnx's
+  `lfr-test.cc`.
 
 ## Conventions
 

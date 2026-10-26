@@ -40,14 +40,14 @@ export interface LanguagePickerProps {
 
 const AUTO = 'auto';
 
-/** Languages the demo transcribes with the chosen quality's own model (others may need a bigger one). */
-const DEMO_BUILT_IN = new Set(['en', 'es']);
+/** The language the demo transcribes with the chosen quality's own model (others may need a bigger one). */
+const DEMO_BUILT_IN = new Set(['en']);
 
 function languageHint(value: string | null, demo: boolean): string {
   if (!value) {
     return demo
-      ? 'Detected for each speaker. Languages other than English and Spanish may download a larger ' +
-          'speech model the first time.'
+      ? 'Detected for each speaker. Languages other than English may download a larger speech model ' +
+          'the first time.'
       : 'Choose one if automatic detection gets it wrong.';
   }
   return demo && !DEMO_BUILT_IN.has(value)
