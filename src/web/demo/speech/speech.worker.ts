@@ -23,6 +23,7 @@ import {
   describeSpeakerLanguages,
   fallbackRecognizer,
   isWhisper,
+  LID_CONFIDENT,
   LID_MIN_SAMPLE_SECONDS,
   languageName,
   listNames,
@@ -32,6 +33,7 @@ import {
   MULTILINGUAL_SURE,
   RECHECK_MIN_SECONDS,
   recheckedLanguage,
+  SPLIT_LID_MIN_SECONDS,
   TURN_LID_MIN_SECONDS,
   RECOGNIZER_COST,
   speakerLanguage,
@@ -39,7 +41,7 @@ import {
   type LanguageGuess,
   type WhisperId,
 } from './routing';
-import { planTurns, splitLongTurns, spreadSample, type Turn } from './turns';
+import { planTurns, quietestPoint, splitLongTurns, spreadSample, type Turn } from './turns';
 
 const SAMPLE_RATE = 16000;
 /**
@@ -269,7 +271,8 @@ export async function transcribeTurns(job: {
   /** Detect each turn's language in multilingual recordings (default true; off to test the rest). */
   turnDetection?: boolean;
 }): Promise<TranscribeResult> {
-  const { audio, turns, models, start, progress } = job;
+  const { audio, models, start, progress } = job;
+  let turns = job.turns;
   const speakers = [...new Set(turns.map((t) => t.speaker))];
   const turnsOf = (speaker: number) => turns.filter((t) => t.speaker === speaker);
   const languages: SpeakerLanguage[] = [];
@@ -323,12 +326,43 @@ export async function transcribeTurns(job: {
         languages.some((s) => s.own && s.own.probability < MULTILINGUAL_SURE))
     ) {
       progress('transcribing', 'Checking the language of each turn…', start);
-      for (const [index, t] of turns.entries()) {
-        if (seconds(t) < TURN_LID_MIN_SECONDS) continue;
+      const checked: Turn[] = [];
+      for (const t of turns) {
         const own = speakerLanguageOf.get(t.speaker)!;
-        const other = recheckedLanguage(own, await lid.detectLanguage(audio.subarray(t.start, t.end)));
-        if (other) turnLanguage.set(index, other);
+        if (seconds(t) < TURN_LID_MIN_SECONDS) {
+          checked.push(t);
+          continue;
+        }
+        if (seconds(t) < SPLIT_LID_MIN_SECONDS) {
+          const other = recheckedLanguage(own, await lid.detectLanguage(audio.subarray(t.start, t.end)));
+          if (other) turnLanguage.set(checked.length, other);
+          checked.push(t);
+          continue;
+        }
+        // A long turn is heard in two parts: two people (or languages) the speaker separation joined
+        // make it two turns, cut at the quietest moment of its middle third.
+        const part = Math.round((t.end - t.start) * 0.4);
+        const head = await lid.detectLanguage(audio.subarray(t.start, t.start + part));
+        const tail = await lid.detectLanguage(audio.subarray(t.end - part, t.end));
+        const sure = head.probability >= LID_CONFIDENT && tail.probability >= LID_CONFIDENT;
+        if (sure && head.code !== tail.code) {
+          const third = Math.round((t.end - t.start) / 3);
+          const cut = quietestPoint(audio, t.start + third, t.end - third);
+          for (const [piece, guess] of [
+            [{ ...t, end: cut }, head],
+            [{ ...t, start: cut }, tail],
+          ] as const) {
+            if (guess.code !== own) turnLanguage.set(checked.length, guess.code);
+            checked.push(piece);
+          }
+          continue;
+        }
+        const both = head.code === tail.code ? (head.probability >= tail.probability ? head : tail) : null;
+        const other = both && sure ? recheckedLanguage(own, both) : null;
+        if (other) turnLanguage.set(checked.length, other);
+        checked.push(t);
       }
+      turns = checked;
       if (turnLanguage.size > 0) {
         const heard = new Map<string, number>();
         turns.forEach((t, i) => {

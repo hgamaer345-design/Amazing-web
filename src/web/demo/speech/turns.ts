@@ -135,6 +135,23 @@ export function spreadSample(
  * the quietest moment in the last `searchSeconds` before each limit so words aren't cut in half.
  * Pieces keep their speaker; the rows are merged again when the document is built.
  */
+/** Middle of the quietest 50 ms of `audio` between samples `from` and `to` (a pause to cut at). */
+export function quietestPoint(audio: Float32Array, from: number, to: number, sampleRate = 16000): number {
+  const frame = Math.round(0.05 * sampleRate);
+  const hop = Math.round(0.01 * sampleRate);
+  let cut = Math.round((from + to) / 2);
+  let quietest = Number.POSITIVE_INFINITY;
+  for (let at = from; at + frame <= to; at += hop) {
+    let energy = 0;
+    for (let k = at; k < at + frame; k++) energy += audio[k]! * audio[k]!;
+    if (energy < quietest) {
+      quietest = energy;
+      cut = at + Math.floor(frame / 2);
+    }
+  }
+  return cut;
+}
+
 export function splitLongTurns(
   audio: Float32Array,
   turns: Turn[],
@@ -143,22 +160,11 @@ export function splitLongTurns(
   const sr = opts.sampleRate ?? 16000;
   const max = Math.round((opts.maxSeconds ?? 28) * sr);
   const search = Math.round((opts.searchSeconds ?? 4) * sr);
-  const frame = Math.round(0.05 * sr);
-  const hop = Math.round(0.01 * sr);
   const out: Turn[] = [];
   for (const turn of turns) {
     let start = turn.start;
     while (turn.end - start > max) {
-      let cut = start + max;
-      let quietest = Number.POSITIVE_INFINITY;
-      for (let at = start + max - search; at + frame <= start + max; at += hop) {
-        let energy = 0;
-        for (let k = at; k < at + frame; k++) energy += audio[k]! * audio[k]!;
-        if (energy < quietest) {
-          quietest = energy;
-          cut = at + Math.floor(frame / 2);
-        }
-      }
+      const cut = quietestPoint(audio, start + max - search, start + max, sr);
       out.push({ speaker: turn.speaker, start, end: cut });
       start = cut;
     }

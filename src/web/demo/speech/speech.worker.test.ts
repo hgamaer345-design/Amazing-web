@@ -142,11 +142,15 @@ describe('transcribeTurns', () => {
     expect(calls).toEqual([
       'detect 0 18s',
       'detect 1 22s',
-      // Two languages: each turn is checked on its own too.
-      'detect 0 10s',
-      'detect 1 12s',
-      'detect 2 8s',
-      'detect 3 10s',
+      // Two languages: each turn is checked on its own too (turns of 8 s or more in two parts).
+      'detect 0 4s',
+      'detect 0 4s',
+      'detect 1 5s',
+      'detect 1 5s',
+      'detect 2 3s',
+      'detect 2 3s',
+      'detect 3 4s',
+      'detect 3 4s',
       // The Whisper already loaded first, then French's (Base is replaced: one Whisper at a time).
       'checked whisper-base 0 en',
       'checked whisper-base 2 en',
@@ -196,9 +200,11 @@ describe('transcribeTurns', () => {
       'detect 2 20s',
       'detect 0 30s',
       // Two languages: each turn's own detection (unsure ones change nothing).
-      'detect 0 20s',
+      'detect 0 8s',
+      'detect 0 8s',
       'detect 1 4s',
-      'detect 2 20s',
+      'detect 2 8s',
+      'detect 2 8s',
       'detect 2 20s', // by Whisper Small, which Swedish goes to
     ]);
   });
@@ -220,6 +226,38 @@ describe('transcribeTurns', () => {
       ['omnilingual:ar:4', 'ar'],
     ]);
     expect(result.relanguaged).toBe(1);
+  });
+
+  it('splits a long turn whose two parts are in different languages', async () => {
+    // Speaker separation joined a Chinese and an Arabic speaker in turn 1 (6–16 s; Arabic, marked
+    // 9 in the fake audio, from 11.2 s after a pause) and gave them speaker 1's label.
+    const turns = [turn(0, 0, 6), turn(1, 6, 16), turn(1, 18, 24)];
+    const audio = audioFor(turns);
+    audio.fill(0, 11 * SR, 11.2 * SR);
+    audio.fill(9, 11.2 * SR, 16 * SR);
+    const env = setup({ detect: (i) => (i === 0 ? sure('en') : i === 1 ? sure('zh') : sure('ar', 0.9)) });
+    const models = new JobModels(env.shelf, 'high', false, env.progress, null);
+    await models.load(models.first);
+    const result = await transcribeTurns({
+      audio,
+      turns,
+      language: null,
+      models,
+      start: 0.3,
+      progress: env.progress,
+    });
+    const parts = result.segments.map((s) => [s.startMs, s.endMs, s.lang] as const);
+    expect(parts.map(([, , lang]) => lang)).toEqual(['en', 'zh', 'ar', 'ar']);
+    // Cut in the pause.
+    expect(parts[1]![1]).toBe(parts[2]![0]);
+    expect(parts[1]![1]).toBeGreaterThanOrEqual(11_000);
+    expect(parts[1]![1]).toBeLessThanOrEqual(11_200);
+    expect(result.segments.map((s) => s.text.split(':')[0])).toEqual([
+      'whisper-base',
+      'sensevoice',
+      'omnilingual',
+      'omnilingual',
+    ]);
   });
 
   it('checks no turn on its own in a recording in one language its speakers are sure of', async () => {

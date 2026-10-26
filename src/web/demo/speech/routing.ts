@@ -194,7 +194,9 @@ export const RECHECK_MIN_SECONDS = 3;
  * In a recording with several languages (or a speaker detected with less than MULTILINGUAL_SURE),
  * every turn at least this long has its own language detected.
  */
-export const TURN_LID_MIN_SECONDS = 2;
+export const TURN_LID_MIN_SECONDS = 1.5;
+/** …and a turn at least this long is checked in two parts, and split if they differ. */
+export const SPLIT_LID_MIN_SECONDS = 8;
 export const MULTILINGUAL_SURE = 0.9;
 
 /** Whether a speaker's language needs the whole recording's detection (see `speakerLanguage`). */
