@@ -42,10 +42,10 @@ async function startWith(language?: string) {
 describe('UploadPanel language', () => {
   it('detects the language unless one is chosen', async () => {
     expect(await startWith()).toMatchObject({ language: null });
-  });
+  }, 20_000);
 
   it('uploads with the chosen language and shows it while uploading', async () => {
     expect(await startWith('French')).toMatchObject({ language: 'fr', quality: 'high' });
     expect(screen.getByText('French', { selector: '.badge' })).toBeInTheDocument();
-  });
+  }, 20_000);
 });

@@ -38,8 +38,9 @@ describe('LanguagePicker', () => {
     const { rerender } = render(<LanguagePicker value={null} onChange={onChange} demo={false} />);
     const select = screen.getByLabelText('Language');
     expect(select).toHaveValue('auto');
-    expect(screen.getByRole('option', { selected: true })).toHaveTextContent('Detect automatically');
-    expect(screen.getAllByRole('option')).toHaveLength(WHISPER_LANGUAGES.length + 1);
+    // Plain DOM queries: role queries over ~100 options are slow in jsdom.
+    expect((select as HTMLSelectElement).selectedOptions[0]).toHaveTextContent('Detect automatically');
+    expect(select.querySelectorAll('option')).toHaveLength(WHISPER_LANGUAGES.length + 1);
 
     await userEvent.selectOptions(select, 'French');
     expect(onChange).toHaveBeenLastCalledWith('fr');
@@ -47,7 +48,7 @@ describe('LanguagePicker', () => {
     expect(select).toHaveValue('fr');
     await userEvent.selectOptions(select, 'Detect automatically');
     expect(onChange).toHaveBeenLastCalledWith(null);
-  });
+  }, 20_000);
 
   it('says in the demo that other languages may download a larger model', () => {
     const { rerender } = render(<LanguagePicker value={null} onChange={() => {}} demo />);

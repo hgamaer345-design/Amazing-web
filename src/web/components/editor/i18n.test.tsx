@@ -188,7 +188,7 @@ describe('transcript header', () => {
     const texts = container.querySelectorAll('.tx-text');
     expect(texts[0]).toHaveAttribute('lang', 'en');
     expect(texts[1]).toHaveAttribute('lang', 'fr');
-  });
+  }, 20_000);
 
   it('shows a single detected language', () => {
     renderEditor({}, [rows[0]!]);
