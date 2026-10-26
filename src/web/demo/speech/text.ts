@@ -98,8 +98,8 @@ export function collapseRepeats(text: string): string {
   return words.join(' ').replace(UNSPACED_RUN, collapseUnspaced);
 }
 
-/** Cleans Whisper's text for a clip: drops sound tags, lone "you" hallucinations and loops. */
-export function cleanTranscript(text: string, clipSeconds: number): string {
+/** The text without its sound tags, single-spaced. */
+function withoutSoundTags(text: string): string {
   const pieces: string[] = [];
   let at = 0;
   for (const m of text.matchAll(SOUND_TAGS)) {
@@ -111,7 +111,12 @@ export function cleanTranscript(text: string, clipSeconds: number): string {
   }
   pieces.push(text.slice(at));
   // Joined as written: no space where a tag sat between two pieces of Chinese or Japanese.
-  let out = joinTexts(pieces).replace(/\s+/g, ' ').trim();
+  return joinTexts(pieces).replace(/\s+/g, ' ').trim();
+}
+
+/** Cleans Whisper's text for a clip: drops sound tags, lone "you" hallucinations and loops. */
+export function cleanTranscript(text: string, clipSeconds: number): string {
+  let out = withoutSoundTags(text);
   // A lone "you" on a very short clip is Whisper's classic output for a breath or a noise.
   if (clipSeconds < 2 && /^you[.!]?$/i.test(out)) out = '';
   return collapseRepeats(out);
@@ -124,14 +129,21 @@ export interface ScoredToken {
   logprob: number;
 }
 
+const idsOf = (tokens: readonly ScoredToken[]) => tokens.map((t) => t.id);
+
 /** One Whisper decode of a clip, with the evidence used to judge it. */
 export interface ClipDecode {
   /** Whisper's text as returned by Transformers.js. */
   text: string;
   /** The text tokens in order (no special or timestamp tokens). */
   tokens: ScoredToken[];
-  /** Log-probability of the end-of-text token, or null when the token limit cut the text off. */
+  /**
+   * Log-probability of the end-of-text token, or null when the text was cut off before it: by the
+   * token limit, at a repetition loop (see `loopGuard`), or by `deloop`.
+   */
   endLogprob: number | null;
+  /** Whether the token limit cut the text off (not a loop, and not Whisper ending it). */
+  truncated: boolean;
   /**
    * Probability of <|nocaptions|> right after <|startoftranscript|>: Whisper's own "nobody is
    * speaking" signal (openai/whisper's no_speech_prob).
@@ -163,9 +175,44 @@ export const HALLUCINATION_LIMITS = {
   loopMinTokens: 16,
   /** A sentence of at least this many tokens said three times in one clip is a loop too. */
   loopSentenceTokens: 4,
+  /**
+   * Whisper is steered out of a loop (see `loopGuard`) only if its text so far averages at least
+   * this, and the text it writes after the loop is kept only if that does too: around a chant
+   * Tiny scored ≥ -0.18, around the loops it fell into on meetings and noise ≤ -0.54.
+   */
+  loopSpeechLogprob: -0.5,
 } as const;
 
 export type HallucinationLimits = { [K in keyof typeof HALLUCINATION_LIMITS]: number };
+
+/** Whisper's whole budget of new tokens: its 448 positions less the prompt. */
+export const WHISPER_MAX_NEW_TOKENS = 444;
+
+/**
+ * Whisper languages written in Latin, Cyrillic or Greek letters, Han, kana or Hangul, which its
+ * tokenizer writes in few tokens: at most 6.8 tokens per second of FLEURS speech, 5.1 in our TTS
+ * tests. Other scripts take 1–2.7 tokens per character (Hindi read speech 8.6–20 tokens/s;
+ * Bengali, Telugu, Malayalam and Burmese twice as many per character).
+ */
+const COMPACT_LANGUAGES = new Set(
+  (
+    'af az ba be bg br bs ca cs cy da de el en es et eu fi fo fr gl ha haw hr ht hu id is it ja jw ' +
+    'kk ko la lb ln lt lv mg mi mk mn ms mt nl nn no oc pl pt ro ru sk sl sn so sq sr su sv sw tg tk ' +
+    'tl tr tt uk uz vi yo yue zh'
+  ).split(' '),
+);
+
+/**
+ * Most tokens Whisper may write for a clip in `language` (a Whisper code) before the decode counts
+ * as cut off: about three times the fastest speech we measured in compact scripts (see
+ * `COMPACT_LANGUAGES`), so a loop the loop checks miss still stops long before Whisper's 448-token
+ * limit (on Tiny, ~20 s for one 13 s clip), and 48 tokens a second, up to 440, in other scripts. A
+ * decode the limit cuts off is decoded again with Whisper's whole budget (`transcribeChecked`).
+ */
+export function maxClipTokens(seconds: number, language: string): number {
+  const perSecond = COMPACT_LANGUAGES.has(language) ? 16 : 48;
+  return Math.min(440, 20 + Math.ceil(perSecond * seconds));
+}
 
 /**
  * Phrases Whisper produces for silence, music and noise: subtitle credits and video outros from
@@ -227,6 +274,9 @@ export const HALLUCINATION_PHRASES = [
   '谢谢观看',
   '感谢观看',
   '시청해 주셔서 감사합니다',
+  '시청해주셔서 감사합니다',
+  'شكرا للمشاهدة',
+  'شكراً للمشاهدة',
   'ИНТРИГУЮЩАЯ МУЗЫКА',
   'ВЕСЕЛАЯ МУЗЫКА',
   'СПОКОЙНАЯ МУЗЫКА',
@@ -285,12 +335,16 @@ const FILLERS = new Set([
   'alright',
 ]);
 
-/** Whether a sentence is a known hallucination phrase or credit, perhaps after a filler word or two. */
+/**
+ * Whether a sentence is a known hallucination phrase or credit, perhaps after a filler word or two.
+ * "You" counts only alone: "And you?" is a real question.
+ */
 export function isHallucinationPhrase(sentence: string): boolean {
   const words = normalizePhrase(sentence).split(' ').filter(Boolean);
   for (let skip = 0; skip <= 2 && skip < words.length; skip++) {
     if (skip > 0 && !FILLERS.has(words[skip - 1]!)) break;
     const rest = words.slice(skip).join(' ');
+    if (skip > 0 && rest === 'you') break;
     if (PHRASES.has(rest) || PREFIXES.some((p) => rest === p || rest.startsWith(`${p} `))) return true;
   }
   return false;
@@ -302,29 +356,46 @@ export function averageLogprob(decode: ClipDecode): number {
   return sum / (decode.tokens.length + 1);
 }
 
+/** A repetition loop in a token sequence (see `loopStart`). */
+interface TokenLoop {
+  /** Just after the first copy of the repeated run. */
+  at: number;
+  /** Tokens in one copy of the repeated run. */
+  period: number;
+  /** How many tokens after the first copy repeat it (whole copies and perhaps part of one). */
+  length: number;
+}
+
+/** The earliest repetition loop in `ids` (see `loopStart`), or null. */
+function firstLoop(ids: readonly number[], limits: HallucinationLimits): TokenLoop | null {
+  let found: TokenLoop | null = null;
+  for (let period = 1; period <= limits.loopMaxPeriod && period * 3 <= ids.length; period++) {
+    let run = 0;
+    for (let i = period; i < ids.length && (!found || i - run < found.at); i++) {
+      run = ids[i] === ids[i - period] ? run + 1 : 0;
+      if (run >= 2 * period && run >= limits.loopMinTokens) {
+        const at = i - run + 1;
+        let end = i + 1;
+        while (end < ids.length && ids[end] === ids[end - period]) end++;
+        if (!found || at < found.at) found = { at, period, length: end - at };
+        break;
+      }
+    }
+  }
+  return found;
+}
+
 /**
  * Where Whisper's repetition loop starts, or -1: the first place where some run of up to
- * `loopMaxPeriod` tokens repeats back to back at least three times, over `loopMinTokens` or more
- * tokens. Works on tokens, so it also catches loops in languages written without spaces. The
- * index is just after the first copy of the repeated run.
+ * `loopMaxPeriod` tokens repeats back to back at least three times, the copies after the first
+ * covering `loopMinTokens` or more tokens. Works on tokens, so it also catches loops in languages
+ * written without spaces. The index is just after the first copy of the repeated run.
  */
 export function loopStart(
   ids: readonly number[],
   limits: HallucinationLimits = HALLUCINATION_LIMITS,
 ): number {
-  let start = -1;
-  for (let period = 1; period <= limits.loopMaxPeriod && period * 3 <= ids.length; period++) {
-    let run = 0;
-    for (let i = period; i < ids.length && (start < 0 || i - run < start); i++) {
-      run = ids[i] === ids[i - period] ? run + 1 : 0;
-      if (run >= 2 * period && run >= limits.loopMinTokens) {
-        const at = i - run + 1;
-        if (start < 0 || at < start) start = at;
-        break;
-      }
-    }
-  }
-  return start;
+  return firstLoop(ids, limits)?.at ?? -1;
 }
 
 /** Whether Whisper fell into a repetition loop (see `loopStart`). */
@@ -332,16 +403,69 @@ export function hasLoop(ids: readonly number[], limits: HallucinationLimits = HA
   return loopStart(ids, limits) >= 0;
 }
 
-/** Splits the tokens into sentences (ending in . ! ? or their CJK forms), each with its tokens. */
+/** The periods of the repetition loops (see `loopStart`) that end at the last token. */
+function trailingLoops(ids: readonly number[], limits: HallucinationLimits): TokenLoop[] {
+  const out: TokenLoop[] = [];
+  for (let period = 1; period <= limits.loopMaxPeriod && period * 3 <= ids.length; period++) {
+    let run = 0;
+    while (run < ids.length - period && ids[ids.length - 1 - run] === ids[ids.length - 1 - run - period])
+      run++;
+    if (run >= 2 * period && run >= limits.loopMinTokens)
+      out.push({ at: ids.length - run, period, length: run });
+  }
+  return out;
+}
+
+/** What `loopGuard` says to do at a decoding step: nothing, ban these tokens, or end the text. */
+export type LoopAction = null | { ban: number[] } | 'end';
+
+/**
+ * Steers a decode out of repetition loops as they happen; called at every step with the text
+ * tokens so far. The first time the text ends in a loop (see `loopStart`), only the tokens that
+ * would continue it are banned, as a no-repeat n-gram rule does, so Whisper moves on to what was
+ * said next: people repeat themselves too (a chant, counting, "No, no, no, …"). The text is ended
+ * there instead if Whisper was unsure of it (`loopSpeechLogprob`: the loops it falls into on noise
+ * and unclear speech), if the loop already fills half of `budget` (the decode's token limit), or
+ * if it loops again after the ban.
+ */
+export function loopGuard(
+  budget: number,
+  limits: HallucinationLimits = HALLUCINATION_LIMITS,
+): (tokens: readonly Pick<ScoredToken, 'id' | 'logprob'>[]) => LoopAction {
+  let bannedAt = -1;
+  let banned: number[] = [];
+  return (tokens) => {
+    // Still waiting for a text token after the ban (a timestamp came first).
+    if (bannedAt === tokens.length) return { ban: banned };
+    const ids = tokens.map((t) => t.id);
+    const loops = trailingLoops(ids, limits);
+    if (!loops.length) return null;
+    const unsure = meanLogprob(tokens) < limits.loopSpeechLogprob;
+    if (bannedAt >= 0 || unsure || loops.some((l) => 2 * (l.period + l.length) >= budget)) return 'end';
+    bannedAt = ids.length;
+    banned = [...new Set(loops.map((l) => ids[ids.length - l.period]!))];
+    return { ban: banned };
+  };
+}
+
+/** Letters and digits that continue a word written in Latin, Cyrillic or Greek. */
+const WORD_GOES_ON = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Greek}\p{N}]/u;
+
+/**
+ * Splits the tokens into sentences (ending in . ! ? or their CJK forms), each with its tokens. An
+ * ASCII mark inside a word ("Amara.org", "А.Синецкая", "3.5") ends none: Whisper's tokenizer
+ * writes it as a token of its own, and the rest of the word follows with no space.
+ */
 export function sentences(tokens: readonly ScoredToken[]): ScoredToken[][] {
   const out: ScoredToken[][] = [];
   let current: ScoredToken[] = [];
-  for (const token of tokens) {
+  for (const [i, token] of tokens.entries()) {
     current.push(token);
-    if (/[.!?。！？]["')\]]*\s*$/.test(token.text)) {
-      out.push(current);
-      current = [];
-    }
+    if (!/[.!?。！？]["')\]]*\s*$/.test(token.text)) continue;
+    const next = tokens[i + 1];
+    if (next && /[.!?]$/.test(token.text) && WORD_GOES_ON.test(next.text)) continue;
+    out.push(current);
+    current = [];
   }
   if (current.length) out.push(current);
   return out;
@@ -350,24 +474,33 @@ export function sentences(tokens: readonly ScoredToken[]): ScoredToken[][] {
 /**
  * Where a sentence of `loopSentenceTokens`+ tokens starts repeating, or -1: the start of its second
  * copy, for a sentence that occurs three or more times (not always back to back, so `loopStart`
- * misses it: "It was a good day. It was fine. It was a good day. …").
+ * misses it: "It was a good day. It was fine. It was a good day. …"). People say a sentence three
+ * times too ("Are you there? … Are you there?"), so it counts only if Whisper never got out of it
+ * (every sentence from the second copy on repeats an earlier one) or the text was `cutOff`.
  */
 export function repeatStart(
   tokens: readonly ScoredToken[],
   limits: HallucinationLimits = HALLUCINATION_LIMITS,
+  cutOff = false,
 ): number {
-  const seen = new Map<string, number[]>();
+  // Where each sentence starts, by its tokens.
+  const seen = new Map<string, { length: number; starts: number[] }>();
   let at = 0;
-  let start = -1;
+  // Every sentence from this token on repeats an earlier one.
+  let repeatsFrom = 0;
   for (const sentence of sentences(tokens)) {
-    if (sentence.length >= limits.loopSentenceTokens) {
-      const key = sentence.map((t) => t.id).join(',');
-      const starts = seen.get(key) ?? [];
-      starts.push(at);
-      seen.set(key, starts);
-      if (starts.length === 3 && (start < 0 || starts[1]! < start)) start = starts[1]!;
-    }
+    const key = idsOf(sentence).join(',');
+    const said = seen.get(key) ?? { length: sentence.length, starts: [] };
+    if (!said.starts.length) repeatsFrom = at + sentence.length;
+    said.starts.push(at);
+    seen.set(key, said);
     at += sentence.length;
+  }
+  let start = -1;
+  for (const { length, starts } of seen.values()) {
+    if (length < limits.loopSentenceTokens || starts.length < 3) continue;
+    const second = starts[1]!;
+    if ((cutOff || second >= repeatsFrom) && (start < 0 || second < start)) start = second;
   }
   return start;
 }
@@ -379,7 +512,7 @@ function loopAt(decode: ClipDecode, limits: HallucinationLimits): number {
       decode.tokens.map((t) => t.id),
       limits,
     ),
-    repeatStart(decode.tokens, limits),
+    repeatStart(decode.tokens, limits, decode.endLogprob === null),
   ];
   const found = starts.filter((i) => i >= 0);
   return found.length ? Math.min(...found) : -1;
@@ -390,34 +523,68 @@ export function isLooping(decode: ClipDecode, limits: HallucinationLimits = HALL
   return loopAt(decode, limits) >= 0;
 }
 
-/** The decode cut where its loop starts (the "delooping" of Barański et al.); unchanged without one. */
+/**
+ * The decode with its loops taken out (the "delooping" of Barański et al.); unchanged without one.
+ * If Whisper ended the text itself, it got out of its loops (see `loopGuard`): each run repeating
+ * back to back keeps one copy, and the text after it is kept if it is speech Whisper was sure of
+ * (`loopSpeechLogprob`). Otherwise, and in a text that was cut off, the text is cut where the loop
+ * starts, after its first copy. From the second copy of a sentence said three times (see
+ * `repeatStart`) the text is cut.
+ */
 export function deloop(decode: ClipDecode, limits: HallucinationLimits = HALLUCINATION_LIMITS): ClipDecode {
-  const at = loopAt(decode, limits);
-  if (at < 0) return decode;
-  const tokens = decode.tokens.slice(0, at);
-  return { ...decode, tokens, endLogprob: null, text: decode.detokenize(tokens.map((t) => t.id)) };
+  let tokens = decode.tokens;
+  let cut = false;
+  for (let loop = firstLoop(idsOf(tokens), limits); loop && !cut; loop = firstLoop(idsOf(tokens), limits)) {
+    const after = tokens.slice(loop.at + loop.length);
+    cut =
+      decode.endLogprob === null ||
+      !/[\p{L}\p{N}]/u.test(decode.detokenize(idsOf(after))) ||
+      meanLogprob(after) < limits.loopSpeechLogprob;
+    // Whole copies only: what is left is the same text, repeated fewer times (a copy can start or
+    // end inside a character that takes several tokens).
+    const copies = loop.length - (loop.length % loop.period);
+    tokens = cut
+      ? tokens.slice(0, loop.at)
+      : [...tokens.slice(0, loop.at), ...tokens.slice(loop.at + copies)];
+  }
+  const at = repeatStart(tokens, limits, decode.endLogprob === null || cut);
+  if (at >= 0) tokens = tokens.slice(0, at);
+  if (tokens.length === decode.tokens.length) return decode;
+  return {
+    ...decode,
+    tokens,
+    endLogprob: cut || at >= 0 ? null : decode.endLogprob,
+    text: decode.detokenize(idsOf(tokens)),
+  };
 }
 
-const meanLogprob = (tokens: readonly ScoredToken[]) =>
-  tokens.reduce((n, t) => n + t.logprob, 0) / Math.max(1, tokens.length);
+function meanLogprob(tokens: readonly Pick<ScoredToken, 'logprob'>[]): number {
+  return tokens.reduce((n, t) => n + t.logprob, 0) / Math.max(1, tokens.length);
+}
 
 /**
  * Removes known hallucination phrases ("Thank you for watching.", "Subtitles by …") from the end
  * of the clip's text (which may be all of it) unless Whisper was confident of them: a real
  * "Thank you." is decoded with high probability, one invented for silence or noise is not.
- * Whisper adds them where a clip trails off into silence; one followed by more speech is kept.
+ * Whisper adds them where a clip trails off into silence; one followed by more speech is kept (a
+ * sound tag such as "[Music]" or "♪" is not speech).
  */
 export function stripHallucinationPhrases(
   decode: ClipDecode,
   limits: HallucinationLimits = HALLUCINATION_LIMITS,
 ): string {
   const parts = sentences(decode.tokens);
-  const count = parts.length;
-  const doubtful = (s: ScoredToken[]) =>
-    meanLogprob(s) < limits.phraseLogprob && isHallucinationPhrase(decode.detokenize(s.map((t) => t.id)));
-  while (parts.length && doubtful(parts[parts.length - 1]!)) parts.pop();
-  if (parts.length === count) return decode.text;
-  return parts.length ? decode.detokenize(parts.flat().map((t) => t.id)) : '';
+  const text = (s: readonly ScoredToken[]) => decode.detokenize(idsOf(s));
+  const doubtful = (s: readonly ScoredToken[]) =>
+    meanLogprob(s) < limits.phraseLogprob && isHallucinationPhrase(text(s));
+  const tagOnly = (s: readonly ScoredToken[]) => normalizePhrase(withoutSoundTags(text(s))) === '';
+  let keep = parts.length;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (doubtful(parts[i]!)) keep = i;
+    else if (!tagOnly(parts[i]!)) break;
+  }
+  if (keep === parts.length) return decode.text;
+  return keep ? text(parts.slice(0, keep).flat()) : '';
 }
 
 export type DropReason = 'silence' | 'loop' | 'low-confidence' | 'phrase';
@@ -426,8 +593,13 @@ export interface ClipVerdict {
   text: string;
   /** Why Whisper's text was dropped (all of it, or the hallucinated phrases). */
   dropped?: DropReason;
-  /** Whether the clip was decoded a second time. */
+  /** Whether the clip was decoded more than once. */
   retried: boolean;
+  /**
+   * Whether the text is only the start of what Whisper heard: the kept decode was cut off (at a
+   * loop Whisper didn't get out of, or by the token limit) and the text before the cut used.
+   */
+  partial: boolean;
 }
 
 /** Whisper says nobody is speaking and isn't sure of what it wrote. */
@@ -435,32 +607,56 @@ export function isSilent(decode: ClipDecode, limits: HallucinationLimits = HALLU
   return decode.noSpeechProb > limits.noSpeech && averageLogprob(decode) < limits.noSpeechLogprob;
 }
 
-/** A decode worth a second try: a loop, cut off by the token limit, or low confidence. */
+/** A decode worth a second try: a loop, cut off, or low confidence. */
 export function isDoubtful(decode: ClipDecode, limits: HallucinationLimits = HALLUCINATION_LIMITS): boolean {
   return (
     isLooping(decode, limits) || decode.endLogprob === null || averageLogprob(decode) < limits.retryLogprob
   );
 }
 
+/** Cut off by the token limit while Whisper was still writing, not looping. */
+const cutShort = (decode: ClipDecode, limits: HallucinationLimits) =>
+  decode.truncated && !isLooping(decode, limits);
+
+/** The decode without the character its last tokens leave unfinished (a cut can split one). */
+function withoutBrokenCharacter(decode: ClipDecode): ClipDecode {
+  let { tokens, text } = decode;
+  while (tokens.length && text.trimEnd().endsWith('�')) {
+    tokens = tokens.slice(0, -1);
+    text = decode.detokenize(idsOf(tokens));
+  }
+  return text === decode.text ? decode : { ...decode, tokens, text };
+}
+
 /**
- * Transcribes a clip with hallucination checks. `decode(false)` is Whisper's usual greedy pass;
- * a doubtful result is decoded again with timestamps (`decode(true)`), which kept Whisper Tiny on
- * track in most of the loops and invented sentences we measured, and the better decode is used:
- * one without a loop if it is likely enough, else the text before the loop. Silence, text that
- * stays unlikely, and known hallucination phrases Whisper isn't sure of are dropped.
+ * Transcribes a clip with hallucination checks. `decode(false, false)` is Whisper's usual greedy
+ * pass within the clip's token limit (`maxClipTokens`); a text that limit cut off while Whisper was
+ * still writing is decoded again with Whisper's whole budget (`decode(false, true)`). A doubtful
+ * result is decoded again with timestamps (`decode(true, …)`), which kept Whisper Tiny on track in
+ * most of the loops and invented sentences we measured, and the better decode is used: one without
+ * a loop if it is likely enough, else the decode with its loops taken out (`deloop`). Silence, text
+ * that stays unlikely, and known hallucination phrases Whisper isn't sure of are dropped.
  */
 export async function transcribeChecked(
-  decode: (timestamps: boolean) => Promise<ClipDecode>,
+  decode: (timestamps: boolean, wholeBudget: boolean) => Promise<ClipDecode>,
   clipSeconds: number,
   limits: HallucinationLimits = HALLUCINATION_LIMITS,
 ): Promise<ClipVerdict> {
-  const first = await decode(false);
-  if (isSilent(first, limits)) return { text: '', dropped: 'silence', retried: false };
-  let best = first;
+  let first = await decode(false, false);
+  if (isSilent(first, limits)) return { text: '', dropped: 'silence', retried: false, partial: false };
   let retried = false;
+  // Fast speech, or a script the tokenizer spends several tokens per character on. (Not a retry
+  // with timestamps: they take from the same budget.)
+  const whole = cutShort(first, limits);
+  if (whole) {
+    retried = true;
+    first = await decode(false, true);
+  }
+  let best = first;
   if (isDoubtful(first, limits)) {
     retried = true;
-    const second = await decode(true);
+    let second = await decode(true, whole);
+    if (!whole && cutShort(second, limits)) second = await decode(true, true);
     const voiced = [first, second].filter((d) => !isSilent(d, limits));
     const likely = (d: ClipDecode) => averageLogprob(d) >= limits.minLogprob;
     const better = (a: ClipDecode, b: ClipDecode) => (averageLogprob(b) > averageLogprob(a) ? b : a);
@@ -474,10 +670,13 @@ export async function transcribeChecked(
         text: '',
         dropped: voiced.length === 0 ? 'silence' : looped ? 'loop' : 'low-confidence',
         retried,
+        partial: false,
       };
     }
   }
+  best = withoutBrokenCharacter(best);
+  const partial = best.endLogprob === null;
   const stripped = stripHallucinationPhrases(best, limits);
   const text = cleanTranscript(stripped, clipSeconds);
-  return stripped === best.text ? { text, retried } : { text, dropped: 'phrase', retried };
+  return stripped === best.text ? { text, retried, partial } : { text, dropped: 'phrase', retried, partial };
 }

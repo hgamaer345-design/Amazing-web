@@ -417,15 +417,32 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   `<|nocaptions|>` score after `<|startoftranscript|>`, read from the first decoder pass as
   openai/whisper does). Then, per clip:
   - no-speech > 0.6 and average log-probability < -1 (openai/whisper's rule): silence, dropped;
-  - a token run repeating 3+ times over 16+ tokens is a loop, ended as soon as it appears (a
-    sentence said three times also counts);
-  - a loop, a text cut off at `maxClipTokens` or an average < -1 gets a second pass with
-    timestamps, which Whisper Tiny usually gets right on such clips; the better decode is kept
-    (else the text before the loop) and the clip dropped if both stay below -1.2; a long clip
-    (≥ 8 s) dropped that way is cut at its quietest moment near the middle and both halves tried;
+  - a run of up to 64 tokens repeated back to back 3+ times, the copies after the first covering
+    16+ tokens, is a loop. When one appears during decoding (`loopGuard`) after text Whisper was
+    sure of (average ≥ -0.5), only the token that would continue it is banned, so Whisper goes on
+    to the rest of the speech (people repeat themselves too: a chant, counting, "No, no, no, …");
+    if it loops again, the text is ended there. A loop after unsure text (those on noise and
+    unclear speech), or one that fills half the token limit, is ended at once. A sentence said
+    three times also counts if Whisper never gets out of it (every sentence from its second copy
+    on repeats an earlier one) or the text was cut off;
+  - a pass may write `maxClipTokens`: 20 + 16 per second in Latin, Cyrillic, Greek, Han, kana and
+    Hangul (FLEURS speech ≤ 6.8 tokens/s), 20 + 48 per second (≤ 440) in other scripts, which the
+    tokenizer spends 1–2.7 tokens per character on (Hindi read speech up to 20 tokens/s). A text
+    cut off there while Whisper was still writing is decoded again with Whisper's whole budget,
+    without timestamps (they take from the same budget); a character a cut splits is dropped;
+  - a loop, a cut-off text or an average < -1 gets a second pass with timestamps, which Whisper
+    Tiny usually gets right on such clips. The better decode is kept, else the decode with its
+    loops taken out: one copy and the text after it if Whisper ended the text itself and its
+    tokens after the loop average ≥ -0.5 (the speech around a chant scored ≥ -0.18 on Tiny, text
+    around the loops it fell into on meetings and noise ≤ -0.54), else the text up to the loop;
+    the clip is dropped if both stay below -1.2. A long clip (≥ 8 s) dropped that way, or whose
+    kept text was cut off, is cut at its quietest moment near the middle and both halves tried (a
+    cut-off text is kept if a half is cut off too or the halves give less);
   - a known hallucination phrase or credit ("Thank you.", "Thanks for watching.", "Subtitles by
     …", HALLUCINATION_PHRASES) ending a clip is removed unless its tokens average ≥ -0.3: real
-    ones scored ≥ -0.12, invented ones ≤ -0.46. One followed by more speech is kept.
+    ones scored ≥ -0.12, invented ones ≤ -0.46. One followed by more speech is kept (a sound tag
+    such as "[Music]" is not speech). Sentences end at . ! ? and 。！？, not at a dot inside a word
+    ("Amara.org", "А.Синецкая", "3.5"); "You" counts only alone ("And you?" is kept).
 
   Measured per clip against a Parakeet-TDT reference on 637 Whisper Tiny clips (a real 5.5 min
   interview under five diarizations, AMI and earnings-call excerpts, the TTS conversations, real
@@ -437,6 +454,17 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   sentence was dropped; Hindi on Tiny (character error > 100%) loses most clips as unlikely. Not
   done: an energy check (clips > 20 dB below the recording's median turn were all
   hallucinations, but it only removed 5 more words).
+
+  The loop guard, the token limit per script, the split of cut-off texts and the sentence rules
+  above came after a review found real speech lost: a chant ("Go! Go! …") or a sentence said
+  three times ended the transcript of its clip, fast Hindi on Small was cut at the token limit
+  (240 of 296 characters, ending in a broken character; now whole, in one pass instead of two),
+  and Amara.org credits were never removed. Run end to end on the same 637 Tiny clips
+  (`transcribeClipChecked` on every clip): wrong words 1078 → 1088 and correct words 6225 → 6284;
+  the 10 more wrong words are misheard words in the speech the split recovered in two clips (+52
+  correct words there), and no clip lost a correct word. Decoder steps 12482 → 13026 (15% fewer
+  than with no filter, 18% before); 808 passes instead of 791. Whisper Base on its 237 clips:
+  unchanged.
 
 - After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
   memory); model errors are reported either as download problems or as "couldn't start" (memory).
