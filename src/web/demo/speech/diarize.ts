@@ -2,12 +2,14 @@
 // pyannote segmentation-3.0:
 //   1. run the segmentation model on 10 s windows (powerset output: up to 3 local speakers),
 //   2. compute a speaker embedding for each (window, local speaker) with enough speech,
-//   3. cluster the embeddings into global speakers (complete linkage, cosine distance),
+//   3. cluster the embeddings into global speakers (Ward linkage, then small clusters are folded
+//      into the nearest voice and every embedding goes to the closest average voice; short
+//      recordings use complete linkage on cosine distance, as the reference does),
 //   4. re-aggregate the per-window activity into global per-frame activity, keeping as many
 //      speakers per frame as the windows say are talking,
 //   5. turn frame activity into segments, merging short gaps and dropping very short bits.
 // The two neural networks are injected so the algorithm itself is testable without them.
-import { clusterEmbeddings } from './cluster';
+import { clusterEmbeddings, refineClusters } from './cluster';
 
 /** pyannote segmentation-3.0 constants (from the model's metadata). */
 export const SEGMENTATION = {
@@ -31,7 +33,21 @@ export interface DiarizationOptions {
   windowShift?: number;
   /** Exact number of speakers if known; otherwise clusters are cut at `threshold`. */
   numSpeakers?: number | null;
+  /**
+   * Ward merge height up to which clusters are joined (unit-length embeddings). By default it
+   * grows with the number of embeddings up to 2: a merge's height grows with the size of the two
+   * groups, so few embeddings need a lower bar to tell voices apart.
+   */
   threshold?: number;
+  /** Complete-linkage cosine distance used instead for short recordings (see cannotLinkMaxWindows). */
+  shortThreshold?: number;
+  /**
+   * A speaker needs at least this much speech (seconds); less is folded into the nearest voice.
+   * Default: 8 s, or a tenth of all speech in short recordings.
+   */
+  minSpeakerSeconds?: number;
+  /** Speakers whose average voices are at least this similar (cosine) are merged. */
+  mergeSimilarity?: number;
   minDurationOn?: number;
   minDurationOff?: number;
   /**
@@ -316,19 +332,45 @@ export async function diarize(
     const valid = pairs.map((_, p) => p).filter((p) => embeddings[p] !== null);
     if (valid.length === 0) return [];
     // 3. Global speakers.
-    // With only a few windows (short recordings) there is too little evidence to tell voices
-    // apart by threshold alone, so local speakers of one window — whom the segmentation model
-    // already told apart — are kept in different clusters. Longer recordings don't need this, and
-    // there an occasional split of one voice into two local speakers would add a phantom speaker.
-    const constrain = labels.length <= (options.cannotLinkMaxWindows ?? 12);
-    const clusters = clusterEmbeddings(
-      valid.map((p) => embeddings[p]!),
-      {
-        numClusters: options.numSpeakers ?? null,
-        threshold: options.threshold ?? 0.5,
-        cannotLink: constrain ? valid.map((p) => pairs[p]!.window) : undefined,
-      },
-    );
+    const vectors = valid.map((p) => embeddings[p]!);
+    const numClusters = options.numSpeakers ?? null;
+    let clusters: number[];
+    if (labels.length <= (options.cannotLinkMaxWindows ?? 12)) {
+      // With only a few windows (short recordings) there is too little evidence to tell voices
+      // apart statistically, so local speakers of one window — whom the segmentation model
+      // already told apart — are kept in different clusters. Longer recordings don't need this,
+      // and there an occasional split of one voice into two local speakers would add a phantom.
+      clusters = clusterEmbeddings(vectors, {
+        numClusters,
+        threshold: options.shortThreshold ?? 0.5,
+        cannotLink: valid.map((p) => pairs[p]!.window),
+      });
+    } else {
+      // Single embeddings of one real voice vary more than some pairs of different voices, so a
+      // plain distance threshold splits people up. Ward linkage compares whole groups instead.
+      const ward = clusterEmbeddings(vectors, {
+        linkage: 'ward',
+        numClusters,
+        threshold: options.threshold ?? Math.min(2, 0.3 * Math.sqrt(vectors.length)),
+      });
+      // Overlapping windows hear the same speech: count each second once.
+      const share = Math.min(1, (anchorEvery * windowShift) / windowSize);
+      const seconds = valid.map(
+        (p) => cleanFrames[pairs[p]!.window]![pairs[p]!.speaker]! * frameSeconds * share,
+      );
+      const speech = seconds.reduce((a, b) => a + b, 0);
+      clusters = refineClusters(
+        vectors,
+        ward,
+        seconds,
+        numClusters
+          ? {}
+          : {
+              minSeconds: options.minSpeakerSeconds ?? Math.min(8, 0.1 * speech),
+              mergeSimilarity: options.mergeSimilarity ?? 0.92,
+            },
+      );
+    }
     globalCount = Math.max(...clusters) + 1;
     const clusterOf = new Map<number, number>(valid.map((p, idx) => [p, clusters[idx]!]));
     pairs.forEach((p, idx) => {

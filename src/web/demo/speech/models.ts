@@ -8,6 +8,7 @@ import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import type { QualityMode } from '../../../shared/types';
 import type { DiarizationModels } from './diarize';
 import { computeFbank } from './fbank';
+import { stripOutputs, UNUSED_WHISPER_OUTPUT } from './onnxOutputs';
 import { cleanTranscript } from './text';
 
 /** Whisper model per quality mode (multilingual; 8-bit quantized for WebAssembly). */
@@ -26,15 +27,15 @@ export const SPEAKER_MODEL_FILES = {
 /**
  * Speaker-analysis settings: hop between the 10 s analysis windows, spacing of the windows that
  * get their own voice fingerprint (the others are matched to them), least clean speech per
- * fingerprint and the most speech used for one. The same for every quality mode: on test
- * conversations a finer hop or longer fingerprints were slower and found the wrong number of
- * speakers more often (see docs/ARCHITECTURE.md).
+ * fingerprint and the most speech used for one. The same for every quality mode. Fingerprints use
+ * all of a speaker's clean speech in the window: on real recordings, ones cut to 2 s varied so
+ * much that one person was split into several speakers (see docs/ARCHITECTURE.md).
  */
 export const DIARIZATION_SETTINGS = {
   windowShiftSec: 2,
   embedStrideSec: 5,
   minEmbedSpeechSec: 1,
-  embedSeconds: 2,
+  embedSeconds: 10,
 } as const;
 
 const CACHE_NAME = 'speaker-transcriber-models-v1';
@@ -63,6 +64,22 @@ export function configureRuntime(liteDevice = false): void {
   // ONNX Runtime is already set up from the files above; don't let transformers.js fetch and keep
   // a second copy of the WebAssembly binary.
   env.useWasmCache = false;
+  // Whisper's unused attention outputs would take hundreds of MB per pass (see onnxOutputs.ts).
+  // transformers.js looks `create` up on every call, so this covers its sessions too.
+  const create = ort.InferenceSession.create.bind(ort.InferenceSession);
+  ort.InferenceSession.create = ((model: unknown, ...rest: unknown[]) =>
+    (create as (...args: unknown[]) => Promise<ort.InferenceSession>)(
+      model instanceof Uint8Array ? withoutUnusedOutputs(model) : model,
+      ...rest,
+    )) as typeof ort.InferenceSession.create;
+}
+
+function withoutUnusedOutputs(model: Uint8Array): Uint8Array {
+  try {
+    return stripOutputs(model, (name) => UNUSED_WHISPER_OUTPUT.test(name));
+  } catch {
+    return model; // not a file this parser understands: let ONNX Runtime load it as it is
+  }
 }
 
 /** A model that couldn't be downloaded ("download") or couldn't be started, e.g. out of memory ("load"). */

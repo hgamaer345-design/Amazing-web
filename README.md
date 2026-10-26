@@ -191,7 +191,7 @@ in which everything happens in the browser:
 - **Phones** give a web page much less memory (iOS closes a tab that uses more than roughly
   1–1.5 GB, without warning), so on iPhones, iPads, Android phones and other low-memory devices the
   demo runs a lighter configuration: one thread, a capped WebAssembly heap, Standard quality by
-  default, and recordings up to 30 minutes. High and Ultra High can still run out of memory there.
+  default, and recordings up to 20 minutes. High and Ultra High can still run out of memory there.
   If the page is closed while transcribing (or crashes), the job is not restarted automatically;
   press Retry, ideally with Standard. Keep the screen on and Safari in front while it works.
 - History is stored in your browser (IndexedDB) and exports are generated in the browser.

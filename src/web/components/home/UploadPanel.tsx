@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ERROR_MESSAGES } from '../../../shared/errors';
+import { LITE_DEVICE } from '../../demo/device';
 import type { QualityMode } from '../../../shared/types';
 import { ApiError, uploadTranscript, type UploadHandle } from '../../api';
 import { useNow, useUsage } from '../../hooks/useUsage';
@@ -13,6 +14,9 @@ import ProcessingSteps from '../ProcessingSteps';
 import { Dropzone } from './Dropzone';
 import { FileCard } from './FileCard';
 import { QualityPicker, remainingUses } from './QualityPicker';
+
+/** Longest recording whose waveform is drawn on a phone. */
+const PHONE_WAVEFORM_MAX_SEC = 10 * 60;
 
 interface Selected {
   file: File;
@@ -88,15 +92,19 @@ export function UploadPanel() {
       const url = URL.createObjectURL(file);
       urlRef.current = url;
       setSelected({ file, url, durationSec: null, waveform: null, analysing: true });
-      analysisRef.current = Promise.all([readAudioDuration(url), decodeWaveform(file)]).then(
-        ([durationSec, waveform]) => {
-          const measured = durationSec ?? waveform?.durationSec ?? null;
-          setSelected((cur) =>
-            cur?.url === url ? { ...cur, durationSec: measured, waveform, analysing: false } : cur,
-          );
-          return measured;
-        },
-      );
+      // Decoding holds the whole recording in memory (30–45 MB per minute): on phones, where that
+      // can get the tab killed, the waveform is only drawn for short recordings.
+      const duration = readAudioDuration(url);
+      const waveform = LITE_DEVICE
+        ? duration.then((d) => (d !== null && d <= PHONE_WAVEFORM_MAX_SEC ? decodeWaveform(file) : null))
+        : decodeWaveform(file);
+      analysisRef.current = Promise.all([duration, waveform]).then(([durationSec, waveform]) => {
+        const measured = durationSec ?? waveform?.durationSec ?? null;
+        setSelected((cur) =>
+          cur?.url === url ? { ...cur, durationSec: measured, waveform, analysing: false } : cur,
+        );
+        return measured;
+      });
     },
     [config.acceptedExtensions, config.maxUploadBytes],
   );

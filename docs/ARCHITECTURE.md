@@ -316,24 +316,26 @@ engine.ts          page side: decode the file to 16 kHz mono (OfflineAudioContex
                    cancel = terminate the worker
 speech.worker.ts   load models → diarize → plan turns (≤ 28 s clips) → detect language → Whisper per clip
 diarize.ts         based on sherpa-onnx's pyannote pipeline: segmentation-3.0 on 10 s windows (powerset →
-                   3 local speakers), WeSpeaker embeddings, complete-linkage cosine clustering
-                   (cluster.ts), overlap-add, min on/off durations — with the changes below
+                   3 local speakers), WeSpeaker embeddings, clustering (cluster.ts: Ward linkage plus
+                   clean-up; complete linkage for short files), overlap-add, min on/off durations —
+                   with the changes below
 fbank.ts           Kaldi fbank (80 bins, povey window, snip_edges=false, no CMN) for WeSpeaker
 turns.ts           speaker turns → padded, merged clips; long turns cut at the quietest point
 text.ts            clean-up of Whisper's text (sound tags, lone "you" on noise, repetition loops)
 models.ts          ONNX Runtime set-up (self-hosted wasm; threads when cross-origin isolated),
                    model download + Cache API, Whisper via Transformers.js, language detection
+onnxOutputs.ts     drops Whisper's unused attention outputs from the model files before loading
 ```
 
-Changes from the reference diarization, each measured against ground truth on conversations
-synthesized with piper TTS voices (2–4 speakers, up to 5.5 min, with and without overlapping
-speech):
+Changes from the reference diarization, measured against ground truth. Early tuning used
+conversations synthesized with piper TTS voices (2–4 speakers, up to 5.5 min, with and without
+overlapping speech); the clustering was then re-tuned on real recordings (below), where TTS voices
+proved a poor guide: they vary far less than real voices.
 
 - **Anchor windows** (`embedStride`, 5 s): only every few windows get embeddings; a local speaker in
   another window takes the speaker of an overlapping anchor whose activity agrees with it (IoU ≥ 0.5
   over the shared frames), and gets its own embedding only when none does. This cuts the embedding
-  work ~5× and, because complete linkage over-splits as embeddings pile up, also stops long files
-  being split into extra speakers (5.5 min, 4 speakers: 6 found before, 4 now).
+  work ~5× (fewer embeddings also keep the clustering quick on long files).
 - **Clean, long-enough speech per embedding**: frames where two local speakers overlap are left out
   (as sherpa's C++ version does), and a local speaker needs ≥ 1 s of clean speech for an embedding —
   shorter samples of one voice are often as far apart as two different voices. Shorter ones are
@@ -347,8 +349,35 @@ speech):
   voice into two local speakers would add a phantom speaker.
 - A frame is only given to speakers that some window actually voted for, and invalid embeddings
   (non-finite, or from the zero-padded tail) are dropped.
-- The same settings for every quality mode (`DIARIZATION_SETTINGS`: 2 s hop, 2 s fingerprints): a
-  1 s hop or 3 s fingerprints were slower and got the number of speakers wrong more often.
+- The same settings for every quality mode (`DIARIZATION_SETTINGS`: 2 s hop, fingerprints from all
+  of a speaker's clean speech in the window, up to 10 s). Fingerprints cut to 2 s were cheaper, but
+  on real recordings two of them from one person were often further apart than two people.
+
+Clustering on real recordings. The original complete-linkage clustering (cosine distance ≤ 0.5:
+two groups merge only if their two most different embeddings are close) worked on TTS voices but
+fell apart on real speech: a 2-person interview came out as 6 speakers, AMI meetings with 4
+participants as 18–40. Real voices vary with intonation, distance to the microphone and crosstalk,
+and a single outlying embedding blocks a merge. Now (`cluster.ts`, `refineClusters`):
+
+- **Ward linkage** on unit-length embeddings, via the same nearest-neighbour chain (Ward is
+  reducible), checked against SciPy. A merge's height grows with the size of both groups, so it
+  behaves like a significance test: two halves of one voice stay close however much they speak,
+  two voices separate more clearly the more each speaks. The threshold is `min(2, 0.3·√n)` for n
+  embeddings, since short recordings give too little evidence for the full bar.
+- **Clean-up**: a cluster with less than `min(8 s, 10 % of the speech)` is folded into the most
+  similar voice (laughter, a cough, crosstalk); clusters whose average voices are ≥ 0.92 alike
+  (cosine) are merged (one speaker who moved relative to the microphone); then every embedding gets
+  the speaker whose average voice is closest (as pyannote does). A known speaker count skips the
+  folding and merging.
+- Short recordings (≤ 12 windows) keep complete linkage with cannot-link, as above.
+
+Evaluated with `onnxruntime-node` on 10 real recordings with reference labels (AMI meetings
+ES2004a/ES2005a/IS1009a/TS3003a, 5–10 min, 4 speakers; five Earnings-21 phone calls, 2–7 speakers;
+a 5.5 min 2-person interview with approximate labels), 4 synthetic conversations, and 12 real
+excerpts of 25 s – 2 min. Mean diarization error (DER, no collar): long files 38.7 % → 18.5 %,
+excerpts 36.1 % → 18.9 %; the interview 43 % (6 speakers) → 13 % (2). Remaining weak spots: phone
+calls with many similar narrow-band voices (an earnings call with 7 speakers is found as 2) and
+heavy overlap in meetings (missed speech is ~10–20 % of the AMI error).
 
 - Speaker models are fetched at build time by `scripts/fetch-speech-models.mjs` from sherpa-onnx's
   GitHub releases (SHA-256 pinned) into `vendor/speech-models/` and served from `<base>/models/`.
@@ -363,6 +392,13 @@ speech):
   still transcribed on its own.
 - After a failed job the worker is replaced (ONNX Runtime may be left unusable, e.g. out of
   memory); model errors are reported either as download problems or as "couldn't start" (memory).
+- Memory: the Whisper conversions on the hub also output every layer's attention weights
+  (`[1, heads, 1500, 1500]` floats: ~200 MB per 30 s pass for Tiny, ~400 MB for Base, ~1.2 GB for
+  Small). ONNX Runtime builds them in its WebAssembly heap, which never shrinks, and copies them
+  to JavaScript. `onnxOutputs.ts` removes those outputs from the model file before the session is
+  created (a few ms; the transcript is identical): peak tab memory in Chromium went from ~1.25 GB to
+  ~0.8 GB in Standard and from ~2 GB to ~0.9 GB in High. Decoding still holds the whole file
+  (~30–45 MB per minute while it runs), hence the shorter limit on phones.
 - GitHub Pages can't send COOP/COEP headers; `coi-serviceworker` adds them so ONNX Runtime can use
   threads (`SharedArrayBuffer`). Without it everything still works single-threaded.
 - Test fixtures were generated with Python reference implementations (`kaldi-native-fbank` for

@@ -26,13 +26,18 @@ const SAMPLE_RATE = 16000;
  */
 const SPEAKERS_SHARE: Record<QualityMode, number> = { standard: 0.3, high: 0.2, ultra: 0.1 };
 
-/** WebAssembly heap limit on phones (ONNX Runtime declares 4 GiB, which iOS can't back). */
-const LITE_HEAP_BYTES = 1024 * 1024 * 1024;
+/**
+ * WebAssembly heap limit on phones (ONNX Runtime declares 4 GiB, which iOS can't back). Standard
+ * needs about 300 MB and High about 450 MB; iOS kills a tab at roughly 1–1.5 GB in total.
+ */
+const LITE_HEAP_BYTES = 768 * 1024 * 1024;
 
 /** ONNX Runtime / Emscripten report exhausted memory in several ways. */
 function isOutOfMemory(err: unknown): boolean {
   const text = err instanceof Error ? `${err.name} ${err.message}` : String(err);
-  return /out of memory|OOM|memory access out of bounds|Cannot enlarge memory|allocat|RangeError/i.test(text);
+  return /out of memory|\bOOM\b|bad_alloc|memory access out of bounds|Cannot enlarge memory|allocat|RangeError/i.test(
+    text,
+  );
 }
 
 function post(message: WorkerResponse): void {

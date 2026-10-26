@@ -42,7 +42,7 @@ const MAX_SPEAKERS = 10;
  * Longest recording the in-browser engine takes: the whole file is decoded in memory at once, and
  * phones give a page far less memory than computers.
  */
-export const MAX_DEMO_DURATION_SEC = (LITE_DEVICE ? 30 : 90) * 60;
+export const MAX_DEMO_DURATION_SEC = (LITE_DEVICE ? 20 : 90) * 60;
 const LIMITS: Record<QualityMode, number | null> = {
   standard: null,
   high: null,
