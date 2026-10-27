@@ -1,6 +1,6 @@
 // Whisper's checked transcription (decodeScored, transcribeClipChecked) on a scripted fake Whisper:
-// the loop guard, the token limit per script, the second decode with the whole budget, and the
-// split of a clip whose text was cut off.
+// the loop guard, the special tokens kept out of the text, the token limit per script, the second
+// decode with the whole budget, and the split of a clip whose text was cut off.
 import type { AutomaticSpeechRecognitionPipeline } from '@huggingface/transformers';
 
 vi.mock('@huggingface/transformers', () => ({ env: {}, pipeline: vi.fn(), Tensor: class {} }));
@@ -11,24 +11,34 @@ const { transcribeClipChecked } = await import('./models');
 const VOCAB = 51865;
 const END = 50257;
 const NO_TIMESTAMPS = 50363;
-const PROMPT = [50258, 50259, 50360]; // <|startoftranscript|><|en|><|transcribe|>
+const TIMESTAMP_BEGIN = 50364; // <|0.00|>
+const PROMPT = [50258, 50259, 50359]; // <|startoftranscript|><|en|><|transcribe|>
 const [FIRST_LANGUAGE, LAST_LANGUAGE] = [50259, 50357]; // <|en|> … <|su|>
 const CHINESE = 50260; // <|zh|>
+const at = (seconds: number) => TIMESTAMP_BEGIN + Math.round(seconds / 0.02);
 
-/** What the fake Whisper wants to write next after `text` (most wanted first) for `clip`. */
-type Script = (text: readonly number[], clip: Float32Array) => number[];
+/**
+ * What the fake Whisper wants to write next after `text` (most wanted first) for `clip`, in a
+ * decode with or without timestamps.
+ */
+type Script = (text: readonly number[], clip: Float32Array, timestamps?: boolean) => number[];
 
 interface Pass {
   timestamps: boolean;
   maxNewTokens: number;
+  /** Every token Whisper chose, but the last <|endoftext|>. */
+  ids: number[];
   text: string;
 }
 
+type Processor = (ids: bigint[][], logits: { data: Float32Array; dims: number[] }) => unknown;
+
 /**
  * A Whisper pipeline that writes greedily from `script`'s preferences (any tokens it doesn't name
- * score lower), with the processors decodeScored gives it applied at every step. `words` are the
- * tokens' texts, by id. Its text is read from the tokens as Transformers.js 4.3.1 reads it (see
- * `readText`), with its tokenizer, which like the real one throws on decoding no tokens.
+ * score lower), with the processors decodeScored gives it applied at every step, in the list its
+ * model builds as Transformers.js 4.3.1 does (`_get_logits_processor`). `words` are the tokens'
+ * texts, by id. Its text is read from the tokens as Transformers.js reads it (see `readText`), with
+ * its tokenizer, which like the real one throws on decoding no tokens.
  */
 function fakeWhisper(words: string[], script: Script) {
   const passes: Pass[] = [];
@@ -44,18 +54,27 @@ function fakeWhisper(words: string[], script: Script) {
     },
   };
   // WhisperTokenizer._decode_asr: without timestamps, a language token other than the last one
-  // closes the text so far, which is decoded then, even when there is none.
+  // closes the text so far, and so does a timestamp after another, in any decode; the text is
+  // decoded then, even when there is none.
   const readText = (ids: number[], timestamps: boolean) => {
     const texts: string[] = [];
     let language = PROMPT[1];
+    let opened: number | null = null;
     let current: number[] = [];
+    const close = () => {
+      texts.push(tokenizer.decode(current));
+      current = [];
+    };
     for (const id of ids.slice(PROMPT.length)) {
       if (id >= FIRST_LANGUAGE && id <= LAST_LANGUAGE) {
-        if (!timestamps && id !== language) {
-          texts.push(tokenizer.decode(current));
-          current = [];
-        }
+        if (!timestamps && id !== language) close();
         language = id;
+      } else if (id >= TIMESTAMP_BEGIN) {
+        if (opened === null) opened = id;
+        else if (id !== opened) {
+          close();
+          opened = null;
+        }
       } else if (id < END) current.push(id);
     }
     if (current.length) texts.push(tokenizer.decode(current));
@@ -68,20 +87,19 @@ function fakeWhisper(words: string[], script: Script) {
       data[NO_TIMESTAMPS - 1] = -10; // <|nocaptions|>: somebody is speaking
       return { logits: { dims: [1, 1, VOCAB], data } };
     },
+    // Transformers.js's own rules (none here), then the caller's, with Whisper's timestamp rules.
+    _get_logits_processor: (_config: unknown, _length: number, processors: Processor[]) => [...processors],
   };
-  type Options = {
-    return_timestamps: boolean;
-    max_new_tokens: number;
-    logits_processor: ((ids: bigint[][], logits: { data: Float32Array; dims: number[] }) => unknown)[];
-  };
+  type Options = { return_timestamps: boolean; max_new_tokens: number; logits_processor: Processor[] };
   const asr = async (clip: Float32Array, opts: Options) => {
     await model.forward({});
     const ids = [...PROMPT, ...(opts.return_timestamps ? [] : [NO_TIMESTAMPS])];
+    const processors = model._get_logits_processor({}, ids.length, opts.logits_processor);
     const text: number[] = [];
     for (let step = 0; step < opts.max_new_tokens; step++) {
       const data = new Float32Array(VOCAB).fill(-20);
-      script(text, clip).forEach((id, rank) => (data[id] = 10 - rank));
-      for (const process of opts.logits_processor) process([ids.map(BigInt)], { data, dims: [1, VOCAB] });
+      script(text, clip, opts.return_timestamps).forEach((id, rank) => (data[id] = 10 - rank));
+      for (const process of processors) process([ids.map(BigInt)], { data, dims: [1, VOCAB] });
       let next = 0;
       for (let i = 1; i < VOCAB; i++) if (data[i]! > data[next]!) next = i;
       ids.push(next);
@@ -91,6 +109,7 @@ function fakeWhisper(words: string[], script: Script) {
     passes.push({
       timestamps: opts.return_timestamps,
       maxNewTokens: opts.max_new_tokens,
+      ids: text,
       text: decode(text),
     });
     return { text: readText(ids, opts.return_timestamps) };
@@ -159,15 +178,86 @@ describe('transcribeClipChecked', () => {
     expect(out.text).toBe('Go!');
   });
 
-  it('keeps the text after a language token Whisper writes before any text', async () => {
+  it('writes the text instead of the language and other special tokens Whisper wants in it', async () => {
     const { words, ids } = vocabulary();
     const sentence = ids(' Turn', ' it', ' up.');
-    // Whisper Base wrote <|zh|> first on a quiet Spanish clip: Transformers.js reads it as a
-    // change of language and decodes the text before it, which is none.
-    const script: Script = (text, clip) => (text.length === 0 ? [CHINESE] : follows(sentence)(text, clip));
+    // Whisper Base wrote <|zh|> first on a quiet Spanish clip, Small <|notimestamps|> in Italian.
+    const script: Script = (text, clip) => {
+      const next = follows(sentence)(text, clip);
+      if (text.length === 0) return [CHINESE, ...next];
+      return text.length === 2 ? [NO_TIMESTAMPS, ...next] : next;
+    };
     const { asr, passes } = fakeWhisper(words, script);
     const out = await transcribeClipChecked(asr, clipOf(5), 'en');
-    expect(passes.map((p) => p.text)).toEqual([' Turn it up.']);
+    expect(passes.map((p) => p.ids)).toEqual([sentence]);
+    expect(out).toMatchObject({ text: 'Turn it up.', doubtful: false });
+  });
+
+  it('keeps the timestamps of a decode with timestamps', async () => {
+    const { words, ids } = vocabulary();
+    const [go, bang, goLower] = ids(' Go', '!', ' go');
+    const sentence = ids(' Turn', ' it', ' up.');
+    // Without timestamps Whisper chants; with them it writes the sentence, and wants <|zh|> once.
+    const script: Script = (text, clip, timestamps) => {
+      if (!timestamps) return text.at(-1) === go || text.at(-1) === goLower ? [bang!] : [go!, goLower!];
+      if (text.length === 0) return [at(0)];
+      if (text.length === 1) return [CHINESE, sentence[0]!];
+      if (text.at(-1) === sentence[2]) return [at(1.5)];
+      return text.at(-1) === at(1.5) ? [END] : follows(sentence)(text, clip);
+    };
+    const { asr, passes } = fakeWhisper(words, script);
+    const out = await transcribeClipChecked(asr, clipOf(5), 'en');
+    expect(passes.map((p) => p.timestamps)).toEqual([false, true]);
+    expect(passes[1]!.ids).toEqual([at(0), ...sentence, at(1.5)]);
+    expect(out.text).toBe('Turn it up.');
+  });
+
+  it("scores a decode as before when a language token is only Whisper's second choice", async () => {
+    const { words, ids } = vocabulary();
+    const sentence = ids(' Turn', ' it', ' up.');
+    const [spare] = ids(' spare');
+    const confidence = async (second: number) => {
+      const script: Script = (text, clip) => {
+        const [next, ...rest] = follows(sentence)(text, clip);
+        return [next!, second, ...rest];
+      };
+      const { asr, passes } = fakeWhisper(words, script);
+      const out = await transcribeClipChecked(asr, clipOf(5), 'en');
+      expect(passes.map((p) => p.ids)).toEqual([sentence]);
+      return out.confidence;
+    };
+    // The language token's share counts against the tokens Whisper chose, as a text token's does.
+    expect(await confidence(CHINESE)).toBeCloseTo(await confidence(spare!), 12);
+  });
+
+  it('scores the last token of a text the token limit cut off as the one Whisper wrote', async () => {
+    const { words, ids } = vocabulary();
+    const sentence = ids(...Array.from({ length: 60 }, (_, i) => `t${i} `));
+    // Whisper wants <|zh|> at the 52nd token, the last the limit lets it write on 2 s of audio.
+    const script: Script = (text, clip) => [
+      ...(text.length === 51 ? [CHINESE] : []),
+      ...follows(sentence)(text, clip),
+    ];
+    const confidence = async (seconds: number) => {
+      const { asr, passes } = fakeWhisper(words, script);
+      const out = await transcribeClipChecked(asr, clipOf(seconds), 'en');
+      expect(passes.at(-1)!.ids).toEqual(sentence);
+      return out.confidence;
+    };
+    // Scored with the word it wrote there, the cut-off decode is no surer than the whole text,
+    // which a 4 s clip gets in one decode.
+    expect(await confidence(2)).toBeCloseTo(await confidence(4), 12);
+  });
+
+  it('keeps the text after two timestamps Whisper writes with no text between', async () => {
+    const { words, ids } = vocabulary();
+    const sentence = ids(' Turn', ' it', ' up.');
+    // Transformers.js reads them as a part of the text, and decodes its tokens, which are none.
+    const script: Script = (text, clip) =>
+      text.length < 2 ? [at(text.length)] : follows(sentence)(text, clip);
+    const { asr, passes } = fakeWhisper(words, script);
+    const out = await transcribeClipChecked(asr, clipOf(5), 'en');
+    expect(passes.map((p) => p.ids)).toEqual([[at(0), at(1), ...sentence]]);
     expect(out.text).toBe('Turn it up.');
   });
 

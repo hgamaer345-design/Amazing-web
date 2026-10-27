@@ -415,7 +415,13 @@ merged), and overlapping speech in meetings (missed speech is ~10–20 % of the 
   watching.", repetition loops, invented sentences). Each greedy pass also records, at no extra
   model cost, every chosen token's log-probability and Whisper's no-speech probability (the
   `<|nocaptions|>` score after `<|startoftranscript|>`, read from the first decoder pass as
-  openai/whisper does). Then, per clip:
+  openai/whisper does). A pass never writes Whisper's special tokens but `<|endoftext|>` and the
+  timestamps: its generation config leaves the language tokens and `<|notimestamps|>` allowed, and
+  Small wrote runs of them in place of real speech (`Ammonisce<|zh|><|zh|>…` for a whole Italian
+  sentence), which the loop checks, on text tokens only, missed. `decodeScored` rules them out
+  after Transformers.js's own rules and records the scores from before, so a decode that never
+  chose one is unchanged (141 of 144 FLEURS clips on Small; the other 3 now keep their text, in
+  one pass). Then, per clip:
   - no-speech > 0.6 and average log-probability < -1 (openai/whisper's rule): silence, dropped;
   - a run of up to 64 tokens repeated back to back 3+ times, the copies after the first covering
     16+ tokens, is a loop. When one appears during decoding (`loopGuard`) after text Whisper was
