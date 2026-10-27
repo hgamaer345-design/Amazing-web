@@ -295,9 +295,13 @@ function logSoftmaxAt(scores: Float32Array, index: number): number {
   return scores[index]! - max - Math.log(sum);
 }
 
+type LogitsProcessor = (inputIds: bigint[][], logits: Tensor) => Tensor;
+
 type WhisperModel = {
   generation_config: { eos_token_id: number; no_timestamps_token_id: number };
   forward(inputs: unknown): Promise<{ logits: Tensor }>;
+  /** A pass's processors: Transformers.js's rules, the caller's, then Whisper's timestamp rules. */
+  _get_logits_processor(...args: unknown[]): { push(processor: LogitsProcessor): void };
 };
 
 /**
@@ -314,10 +318,13 @@ async function decodeScored(
 ): Promise<ClipDecode> {
   const model = asr.model as unknown as WhisperModel;
   const { eos_token_id: endId, no_timestamps_token_id: noTimestampsId } = model.generation_config;
+  // Whisper's special tokens between <|endoftext|> and the timestamps (<|startoftranscript|>, the
+  // language tokens, <|transcribe|>, <|nocaptions|>, <|notimestamps|>…): none belongs in its text.
+  const isControl = (id: number) => id > endId && id <= noTimestampsId;
   const chosen: { id: number; logprob: number }[] = [];
   // The scores are read one step late: Transformers.js runs its timestamp rules after this
-  // processor and they edit the scores in place, so they are final (and the chosen token, the
-  // last input id, known) only at the next step.
+  // processor and they edit the scores in place, so they are final only when `withoutControl`
+  // runs, last, and the chosen token, the last input id, is known only at the next step.
   let pending: Float32Array | null = null;
   const settle = (id: number) => {
     if (pending) chosen.push({ id, logprob: logSoftmaxAt(pending, id) });
@@ -358,10 +365,31 @@ async function decodeScored(
     }
     return out;
   };
+  // Whisper's generation config suppresses its control tokens (`isControl`) but the language
+  // tokens and <|notimestamps|>, which Whisper sometimes writes in its text, and then often little
+  // else: Base <|zh|> first in a quiet Spanish clip, Small "…<|ru|><|zh|><|zh|>…" after real
+  // Italian (a run the loop checks, which look at text tokens, don't see). So all of them are
+  // ruled out at every step, after every other rule (which see the scores as before), and Whisper
+  // writes its next best token instead. The scores are kept as they were before that: a token's
+  // log-probability counts the share Whisper gave these tokens, as it always has, so a decode that
+  // never chose one scores the same, and a token written instead of one is as unlikely as Whisper
+  // found it.
+  const withoutControl: LogitsProcessor = (_inputIds, logits) => {
+    if (pending) pending = pending.slice();
+    (logits.data as Float32Array).fill(Number.NEGATIVE_INFINITY, endId + 1, noTimestampsId + 1);
+    return logits;
+  };
+  const getProcessors = model._get_logits_processor;
+  model._get_logits_processor = (...args) => {
+    const processors = getProcessors.apply(model, args);
+    processors.push(withoutControl);
+    return processors;
+  };
   // Transformers.js (4.3.1) reads Whisper's text in parts, cut at each change of language token
-  // (and timestamp), and its decode throws on a part with no tokens: a language token Whisper
-  // writes first (Base: <|zh|> in a quiet Spanish clip) or right after another (Small: a text that
-  // ends in <|zh|><|en|><|zh|>…). That part's text is "", as Hugging Face's Python version has it.
+  // and at timestamps, and its decode throws on a part with no tokens. Language tokens are ruled
+  // out above, but two timestamps with no text between would do it too: nothing rules those out
+  // in a decode without timestamps. That part's text is "", as Hugging Face's Python version has
+  // it.
   const tokenizer = asr.tokenizer;
   const decode = tokenizer.decode;
   tokenizer.decode = (ids, args) =>
@@ -379,13 +407,14 @@ async function decodeScored(
     text = (Array.isArray(out) ? out[0]! : out).text;
   } finally {
     model.forward = forward;
+    model._get_logits_processor = getProcessors;
     tokenizer.decode = decode;
   }
   if (pending && !ended) {
-    // The last step: greedy decoding took the best-scoring token.
+    // The last step: greedy decoding took the best-scoring token that isn't a control token.
     const last: Float32Array = pending;
     let best = 0;
-    for (let i = 1; i < last.length; i++) if (last[i]! > last[best]!) best = i;
+    for (let i = 1; i < last.length; i++) if (!isControl(i) && last[i]! > last[best]!) best = i;
     settle(best);
   }
   const end = chosen.findIndex((t) => t.id === endId);
