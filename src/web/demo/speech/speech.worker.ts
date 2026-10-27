@@ -466,11 +466,16 @@ export async function transcribeTurns(job: {
       progress('transcribing', message, advance());
       const clip = audio.subarray(p.turn.start, p.turn.end);
       let text: string;
+      // Whether the model heard anything, its captions and outros included ("ДИНАМИЧНАЯ МУЗЫКА" for
+      // a song; see `ClipTranscript.withCaptions`): the choices below go by it, so a turn Whisper
+      // wrote only a caption for (not shown) isn't given another language's text instead.
+      let heard: boolean;
       let language = p.language;
       if (!job.language && isWhisperRecognizer(model) && seconds(p.turn) >= RECHECK_MIN_SECONDS) {
         // Whisper doubting a turn (a loop, an unlikely text) can mean the speaker changed language.
         const first = await model.transcribeChecked(clip, language);
         text = first.text;
+        heard = first.withCaptions !== '';
         const other = first.doubtful ? recheckedLanguage(language, await model.detectLanguage(clip)) : null;
         if (other) {
           const target = models.route(other);
@@ -478,7 +483,7 @@ export async function transcribeTurns(job: {
           if (waiting) {
             // The model for that language is still to come: the turn waits for it.
             relanguaged++;
-            const earlier = text ? { text, language } : p.earlier;
+            const earlier = heard ? { text, language } : p.earlier;
             move(p, target);
             waiting.push({ ...p, language: other, earlier });
             continue;
@@ -486,16 +491,20 @@ export async function transcribeTurns(job: {
           // Otherwise this model, in that language (its own model is done or not needed so far),
           // if Whisper is surer of that text: on music, detection says English with confidence.
           const again = await model.transcribeChecked(clip, other);
-          if (again.text && again.confidence > first.confidence) {
+          if (again.withCaptions && again.confidence > first.confidence) {
             relanguaged++;
             text = again.text;
+            heard = true;
             language = other;
           }
         }
       } else {
+        // (A turn with an earlier text, which came through the branch above, takes this one only
+        // with a model other than Whisper, and those write no captions.)
         text = await model.transcribe(clip, language);
+        heard = text !== '';
       }
-      if (!text && p.earlier) ({ text, language } = p.earlier);
+      if (!heard && p.earlier) ({ text, language } = p.earlier);
       const cost = RECOGNIZER_COST[p.recognizer] * seconds(p.turn);
       pendingCost -= cost;
       doneCost += cost;

@@ -53,6 +53,8 @@ interface Scenario {
   detect?: (turnIndex: number, sample: Float32Array, model: RecognizerId) => LanguageGuess;
   /** Turns whose first Whisper decode is doubtful (when transcribed in `lang`). */
   doubtful?: (turnIndex: number, lang: string) => boolean;
+  /** Turns Whisper writes only a caption for in `lang` ("ДИНАМИЧНАЯ МУЗЫКА", left out of the text). */
+  caption?: (turnIndex: number, lang: string) => boolean;
   failing?: RecognizerId[];
   /** Models that hear nothing. */
   silent?: RecognizerId[];
@@ -79,8 +81,14 @@ function setup(scenario: Scenario = {}) {
       async transcribeChecked(clip: Float32Array, lang: string) {
         calls.push(`checked ${id} ${clip[0]! - 1} ${lang}`);
         const doubtful = scenario.doubtful?.(clip[0]! - 1, lang) ?? false;
+        const caption = scenario.caption?.(clip[0]! - 1, lang) ?? false;
         // A doubtful decode is a less likely one.
-        return { text: text(clip, lang), doubtful, confidence: doubtful ? -1.5 : -0.3 };
+        return {
+          text: caption ? '' : text(clip, lang),
+          withCaptions: caption ? 'ДИНАМИЧНАЯ МУЗЫКА' : text(clip, lang),
+          doubtful,
+          confidence: doubtful ? -1.5 : -0.3,
+        };
       },
       async detectLanguage(sample: Float32Array) {
         calls.push(`detect ${sample[0]! - 1} ${(sample.length / SR).toFixed(0)}s`);
@@ -415,6 +423,59 @@ describe('transcribeTurns', () => {
       ['whisper-base:en:1', 'en'],
     ]);
     expect(result.relanguaged).toBe(1);
+  });
+
+  it('counts a caption as heard when it re-detects a turn’s language: the turn gets no text', async () => {
+    // Speaker 0 is English; turn 1 is a song, doubtful in English and detected as Russian, where
+    // Whisper (the same model: Small is not to come) writes only a caption for it.
+    const turns = [turn(0, 0, 10), turn(0, 12, 17)];
+    const { result } = await run(turns, {
+      detect: (i, sample) => (sample.length > 6 * SR || i === 0 ? sure('en') : sure('ru', 0.9)),
+      doubtful: (i, lang) => i === 1 && lang === 'en',
+      caption: (i, lang) => i === 1 && lang === 'ru',
+      turnDetection: false,
+    });
+    expect(result.segments.map((s) => [s.text, s.lang])).toEqual([['whisper-base:en:0', 'en']]);
+    expect(result.relanguaged).toBe(1);
+  });
+
+  it('keeps no earlier text for a turn whose new model heard only a caption', async () => {
+    // Speaker 0 is English, speaker 1 Russian; speaker 0's first turn is doubtful in English and
+    // detected as Russian, and Whisper Small writes only a caption for it.
+    const turns = [turn(0, 0, 10), turn(0, 12, 20), turn(1, 20, 30)];
+    const { result } = await run(turns, {
+      detect: (i, sample) => sure(i === 2 || (i === 0 && sample.length === 10 * SR) ? 'ru' : 'en'),
+      doubtful: (i, lang) => i === 0 && lang === 'en',
+      caption: (i, lang) => i === 0 && lang === 'ru',
+      turnDetection: false,
+    });
+    expect(result.segments.map((s) => [s.text, s.lang])).toEqual([
+      ['whisper-base:en:1', 'en'],
+      ['whisper-small:ru:2', 'ru'],
+    ]);
+    expect(result.relanguaged).toBe(1);
+  });
+
+  it('passes on what the latest model heard, a caption too, when a turn moves twice', async () => {
+    // Speaker 0 is English, 1 Russian, 2 Japanese. Speaker 0's first turn is doubtful in English
+    // and detected as Russian; Whisper Small writes only a doubtful caption for it and detects
+    // Japanese; SenseVoice hears nothing in it.
+    const turns = [turn(0, 0, 10), turn(0, 12, 20), turn(1, 20, 34), turn(2, 34, 40)];
+    const { result } = await run(turns, {
+      detect: (i, sample, model) =>
+        i === 0 && sample.length === 10 * SR
+          ? sure(model === 'whisper-small' ? 'ja' : 'ru')
+          : sure(['en', 'en', 'ru', 'ja'][i]!),
+      doubtful: (i, lang) => i === 0 && lang !== 'ja',
+      caption: (i, lang) => i === 0 && lang === 'ru',
+      turnDetection: false,
+      silent: ['sensevoice'],
+    });
+    expect(result.segments.map((s) => [s.text, s.lang])).toEqual([
+      ['whisper-base:en:1', 'en'],
+      ['whisper-small:ru:2', 'ru'],
+    ]);
+    expect(result.relanguaged).toBe(2);
   });
 });
 

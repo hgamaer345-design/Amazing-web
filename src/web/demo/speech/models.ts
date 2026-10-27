@@ -23,6 +23,7 @@ import {
   maxClipTokens,
   transcribeChecked,
   WHISPER_MAX_NEW_TOKENS,
+  withoutCaptions,
   type ClipDecode,
 } from './text';
 import { splitLongTurns } from './turns';
@@ -402,6 +403,11 @@ const SPLIT_MIN_SECONDS = 8;
 /** A clip's text, and whether Whisper doubted its first decode (see `transcribeClipChecked`). */
 export interface ClipTranscript {
   text: string;
+  /**
+   * The text with Whisper's captions and outros still in (`ClipVerdict.withCaptions`), which says
+   * whether Whisper heard anything: "ДИНАМИЧНАЯ МУЗЫКА" for a song is something, though not text.
+   */
+  withCaptions: string;
   doubtful: boolean;
   /** Average log-probability of Whisper's likelier decode of the clip (-Infinity without one). */
   confidence: number;
@@ -422,8 +428,13 @@ export async function transcribeClipChecked(
   language: string,
   canSplit = true,
 ): Promise<ClipTranscript> {
-  const { text, doubtful, confidence } = await transcribeClipPartly(asr, clip, language, canSplit);
-  return { text, doubtful, confidence };
+  const { text, withCaptions, doubtful, confidence } = await transcribeClipPartly(
+    asr,
+    clip,
+    language,
+    canSplit,
+  );
+  return { text, withCaptions, doubtful, confidence };
 }
 
 /** `transcribeClipChecked`, and whether the text is only the start of the clip's speech. */
@@ -438,8 +449,9 @@ async function transcribeClipPartly(
     // Not used by the worker (clips are cut to ≤ 28 s), so no checks beyond the clean-up.
     const out = await asr(clip, { language, task: 'transcribe', chunk_length_s: 30, stride_length_s: 5 });
     const text = Array.isArray(out) ? out.map((o) => o.text).join(' ') : out.text;
+    const withCaptions = cleanTranscript(text, seconds);
     const confidence = Number.NEGATIVE_INFINITY;
-    return { text: cleanTranscript(text, seconds), doubtful: false, confidence, partial: false };
+    return { text: withoutCaptions(withCaptions), withCaptions, doubtful: false, confidence, partial: false };
   }
   let confidence = Number.NEGATIVE_INFINITY;
   const verdict = await transcribeChecked(async (timestamps, wholeBudget) => {
@@ -449,7 +461,13 @@ async function transcribeClipPartly(
     return decode;
   }, seconds);
   const doubtful = verdict.retried;
-  const kept = { text: verdict.text, doubtful, confidence, partial: verdict.partial };
+  const kept = {
+    text: verdict.text,
+    withCaptions: verdict.withCaptions,
+    doubtful,
+    confidence,
+    partial: verdict.partial,
+  };
   const failed = verdict.dropped === 'loop' || verdict.dropped === 'low-confidence';
   if (!canSplit || seconds < SPLIT_MIN_SECONDS || !(failed || verdict.partial)) return kept;
   // One cut between a third and two thirds of the clip, at its quietest 50 ms.
@@ -462,9 +480,12 @@ async function transcribeClipPartly(
     parts.push(await transcribeClipPartly(asr, clip.subarray(half.start, half.end), language, false));
   }
   const text = joinTexts(parts.map((p) => p.text));
-  // A cut-off text is kept if splitting didn't help: a half was cut off too, or they give less.
-  if (verdict.partial && (parts.some((p) => p.partial) || text.length < verdict.text.length)) return kept;
-  return { text, doubtful, confidence, partial: parts.some((p) => p.partial) };
+  const withCaptions = joinTexts(parts.map((p) => p.withCaptions));
+  // A cut-off text is kept if splitting didn't help: a half was cut off too, or they give less
+  // (with their captions and outros, which a half of music may give instead of speech).
+  const less = withCaptions.length < verdict.withCaptions.length;
+  if (verdict.partial && (parts.some((p) => p.partial) || less)) return kept;
+  return { text, withCaptions, doubtful, confidence, partial: parts.some((p) => p.partial) };
 }
 
 /** `transcribeClipChecked`'s text. */
