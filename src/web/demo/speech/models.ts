@@ -358,6 +358,14 @@ async function decodeScored(
     }
     return out;
   };
+  // Transformers.js (4.3.1) reads Whisper's text in parts, cut at each change of language token
+  // (and timestamp), and its decode throws on a part with no tokens: a language token Whisper
+  // writes first (Base: <|zh|> in a quiet Spanish clip) or right after another (Small: a text that
+  // ends in <|zh|><|en|><|zh|>…). That part's text is "", as Hugging Face's Python version has it.
+  const tokenizer = asr.tokenizer;
+  const decode = tokenizer.decode;
+  tokenizer.decode = (ids, args) =>
+    Array.isArray(ids) && ids.length === 0 ? '' : decode.call(tokenizer, ids, args);
   let text: string;
   try {
     const out = await asr(clip, {
@@ -371,6 +379,7 @@ async function decodeScored(
     text = (Array.isArray(out) ? out[0]! : out).text;
   } finally {
     model.forward = forward;
+    tokenizer.decode = decode;
   }
   if (pending && !ended) {
     // The last step: greedy decoding took the best-scoring token.
@@ -380,7 +389,6 @@ async function decodeScored(
     settle(best);
   }
   const end = chosen.findIndex((t) => t.id === endId);
-  const tokenizer = asr.tokenizer;
   return {
     text,
     // Text tokens come before the special ones (<|endoftext|> and up, timestamps included).
