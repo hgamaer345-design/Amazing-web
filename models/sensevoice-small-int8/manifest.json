@@ -1,0 +1,50 @@
+{
+ "format": 1,
+ "source": {
+  "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+  "member": "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx",
+  "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+ },
+ "model": {
+  "file": "model.2eee7843537ce333.onnx",
+  "bytes": 2612661,
+  "sha256": "2eee7843537ce3330a2238e613b7ed330fce93646d4d428c6150e69d3059bded"
+ },
+ "data": [
+  {
+   "file": "model.5c1dc29206edc8e9.data",
+   "bytes": 44553472,
+   "sha256": "5c1dc29206edc8e9aa1ee71deac65f0ca3bd3632febb6c668f8e0d71f47ff1a0"
+  },
+  {
+   "file": "model.97f3135b55b3d211.data",
+   "bytes": 44826624,
+   "sha256": "97f3135b55b3d21158edbb8c4ce92f71426f4fb218ad942c7bc0fa18946a493c"
+  },
+  {
+   "file": "model.0ffb0d27ca777a42.data",
+   "bytes": 44302336,
+   "sha256": "0ffb0d27ca777a42fc606cf45b4563f4330aa1ace86be5a2705f0436f33b0679"
+  },
+  {
+   "file": "model.fb26a42ff77e6372.data",
+   "bytes": 44040192,
+   "sha256": "fb26a42ff77e63725d9f6e42819a2f17e3e138edf815b304d97b04324bce32ef"
+  },
+  {
+   "file": "model.db4304a641dac81a.data",
+   "bytes": 44040192,
+   "sha256": "db4304a641dac81a6d44163331ff0f5198d6e20cb1529fb526c2c7546cf2de13"
+  },
+  {
+   "file": "model.dbd65b18d8223d56.data",
+   "bytes": 14925312,
+   "sha256": "dbd65b18d8223d5670b80e2f2622aef2207d0f85be04cf653f55eaf7a48b687e"
+  }
+ ],
+ "tokens": {
+  "file": "tokens.f449eb28dc567533.txt",
+  "bytes": 315894,
+  "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+ }
+}

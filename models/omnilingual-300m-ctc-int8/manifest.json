@@ -1,0 +1,65 @@
+{
+ "format": 1,
+ "source": {
+  "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12.tar.bz2",
+  "member": "sherpa-onnx-omnilingual-asr-1600-languages-300M-ctc-int8-2025-11-12/model.int8.onnx",
+  "sha256": "e7c4e54ee4c4c47829cc6667d5d00ed8ea7bef1dcfeef0fce766f77752a2726c"
+ },
+ "model": {
+  "file": "model.88e3f0b4692376fb.onnx",
+  "bytes": 1088906,
+  "sha256": "88e3f0b4692376fbc8c5b1af2f0e4003d6b04757a243ac13998f1313bec35317"
+ },
+ "data": [
+  {
+   "file": "model.5a1ccf2e3ddb1b07.data",
+   "bytes": 18178432,
+   "sha256": "5a1ccf2e3ddb1b07c5234ea561c5a3c019415f477e3709480b8e7c5ea2d1de94"
+  },
+  {
+   "file": "model.0d3aff112a70d362.data",
+   "bytes": 42467328,
+   "sha256": "0d3aff112a70d3621d9edf9e40864c2883e60a1b60cc0b0132a5ebfa63181fbb"
+  },
+  {
+   "file": "model.89ef6eff5e504d40.data",
+   "bytes": 44040192,
+   "sha256": "89ef6eff5e504d402d2909e97175f8dae9a0fb65d51d1cf4edf349feeadabbd3"
+  },
+  {
+   "file": "model.4ab4ba38424338c3.data",
+   "bytes": 44040192,
+   "sha256": "4ab4ba38424338c3d0597a287c90c620733fcfc4f34ed6247accfc2ff31db461"
+  },
+  {
+   "file": "model.5fd00524ad982900.data",
+   "bytes": 44040192,
+   "sha256": "5fd00524ad982900c8948f799ed86948327761f3f77c6a703c89c9a6cc8fde42"
+  },
+  {
+   "file": "model.fbbe1fecb9ce44a5.data",
+   "bytes": 44040192,
+   "sha256": "fbbe1fecb9ce44a599b4da99aa9413292288c02d112324196ee665d8220125af"
+  },
+  {
+   "file": "model.e30af7467ce44b4c.data",
+   "bytes": 44040192,
+   "sha256": "e30af7467ce44b4c6ce87421a0fd33a3e1972bdcf3d82930723d110cd86c8d3e"
+  },
+  {
+   "file": "model.978cfce25f0c1c5b.data",
+   "bytes": 44040192,
+   "sha256": "978cfce25f0c1c5b11767d39fc2269fdb35c0d3b45933bdc695080cf2177b989"
+  },
+  {
+   "file": "model.82abe89cb1427e71.data",
+   "bytes": 39407616,
+   "sha256": "82abe89cb1427e7156bbab29bad71d829745902e57df9186015d4f81552f9cd8"
+  }
+ ],
+ "tokens": {
+  "file": "tokens.a7a044c52cb29cbe.txt",
+  "bytes": 86423,
+  "sha256": "a7a044c52cb29cbe8b0dc1953e92cefd4ca16b0ed968177b6beab21f9a7d0b31"
+ }
+}
